@@ -44,7 +44,7 @@ def disk_offload_module(module):
 
 def cpu_offload_module(module):
     org_device = next(module.parameters()).device
-    module.to(device=org_device)
+    module.to(device='cpu')
 
     def reload_handle():
         module.to(device=org_device)
