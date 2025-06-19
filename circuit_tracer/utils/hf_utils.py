@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from huggingface_hub import hf_hub_download, get_token, hf_api
 from huggingface_hub.constants import HF_HUB_ENABLE_HF_TRANSFER
 from huggingface_hub.utils.tqdm import tqdm as hf_tqdm
-from huggingface_hub.utils import HfFolder, GatedRepoError, RepositoryNotFoundError
+from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 from tqdm.contrib.concurrent import thread_map
 
 
