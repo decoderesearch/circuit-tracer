@@ -1,13 +1,16 @@
 from __future__ import annotations
+import logging
 
-from typing import Dict, Iterable, NamedTuple, Optional
+from typing import Dict, Iterable, NamedTuple, Optional, Dict
 from urllib.parse import parse_qs, urlparse
 
 from huggingface_hub import hf_hub_download, get_token, hf_api
 from huggingface_hub.constants import HF_HUB_ENABLE_HF_TRANSFER
 from huggingface_hub.utils.tqdm import tqdm as hf_tqdm
-from huggingface_hub.utils import HfFolder, GatedRepoError, RepositoryNotFoundError
+from huggingface_hub.utils import RepositoryNotFoundError
 from tqdm.contrib.concurrent import thread_map
+
+logger = logging.getLogger(__name__)
 
 
 class HfUri(NamedTuple):
@@ -50,7 +53,6 @@ def download_hf_uri(uri: str) -> str:
         force_download=False,
     )
 
-
 def download_hf_uris(uris: Iterable[str], max_workers: int = 8) -> Dict[str, str]:
     """Download multiple HuggingFace URIs concurrently with pre-flight auth checks.
 
@@ -64,43 +66,26 @@ def download_hf_uris(uris: Iterable[str], max_workers: int = 8) -> Dict[str, str
     if not uris:
         return {}
 
-    # Ensure uris is a list to avoid consuming an iterator multiple times
     uri_list = list(uris)
+    if not uri_list:
+        return {}
     parsed_map = {uri: parse_hf_uri(uri) for uri in uri_list}
 
-    # --- Pre-flight Authentication Check ---
-    print("-> Performing pre-flight authentication check...")
+    # ---  Pre-flight Check ---
+    logger.info("Performing pre-flight metadata check...")
     unique_repos = {info.repo_id for info in parsed_map.values()}
-    token = get_token() # Check for token once
+    token = get_token()
 
     for repo_id in unique_repos:
-        try:
-            repo_info = hf_api.repo_info(repo_id=repo_id, token=token)
-            # If repo is private or gated, we MUST have a token.
-            if repo_info.private or repo_info.gated:
-                if token is None:
-                    raise PermissionError(
-                        f"Repository '{repo_id}' is private or gated, but no Hugging Face token was found. "
-                        "Please log in via `huggingface-cli login` or set the `HUGGING_FACE_HUB_TOKEN` env variable."
-                    )
-        except RepositoryNotFoundError:
-            # Let hf_hub_download handle this error later if it's a real issue.
-            # Sometimes a revision points to a repo that doesn't exist yet, etc.
-            print(f"--> Warning: Repository '{repo_id}' not found during pre-flight check. Proceeding with download attempt.")
-            pass
-        except GatedRepoError as e:
-            # This is a specific error for gated repos where user doesn't have access
-             raise PermissionError(
-                f"You have not accepted the terms of use for the gated repository '{repo_id}'. "
-                f"Please visit https://huggingface.co/{repo_id} to accept the terms."
-            ) from e
-            
-    print("--> Authentication check passed.")
-    # --- End of Pre-flight Check ---
+        if hf_api.repo_info(repo_id=repo_id, token=token).gated != False:
+            if token is None:
+                raise PermissionError("Cannot access a gated repo without a hf token.")
+
+    logger.info("Pre-flight check complete. Starting downloads...")
 
     def _download(uri: str) -> str:
         info = parsed_map[uri]
-        # We can pass the token explicitly to be 100% sure it's used
+
         return hf_hub_download(
             repo_id=info.repo_id,
             filename=info.file_path,
@@ -110,10 +95,13 @@ def download_hf_uris(uris: Iterable[str], max_workers: int = 8) -> Dict[str, str
         )
 
     if HF_HUB_ENABLE_HF_TRANSFER:
-        # This part likely doesn't use threads, so it's safer but slower
-        return {uri: _download(uri) for uri in uri_list}
+        # Use a simple loop for sequential download if HF_TRANSFER is enabled
+        results = [_download(uri) for uri in uri_list]
+        return dict(zip(uri_list, results))
 
-    # Now we can safely execute the thread map
+    # The thread_map will attempt all downloads in parallel. If any worker thread
+    # raises an exception (like GatedRepoError from _download), thread_map
+    # will propagate that first exception, failing the entire process.
     results = thread_map(
         _download,
         uri_list,
