@@ -5,6 +5,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
@@ -583,7 +584,16 @@ class ReplacementModel(HookedTransformer):
         )
         all_hooks += activation_hooks + intervention_hooks
 
-        return all_hooks, activation_cache
+        cached_logits = [None]  # Use a list so we can mutate it
+        def logit_cache_hook(activations, hook):
+            if self.cfg.output_logits_soft_cap > 0.0:
+                cached_logits[0] = self.cfg.output_logits_soft_cap * F.tanh(
+                        activations / self.cfg.output_logits_soft_cap)
+            else:
+                cached_logits[0] = activations.clone()
+        all_hooks.append(('unembed.hook_post', logit_cache_hook))
+
+        return all_hooks, cached_logits, activation_cache
 
     @torch.no_grad
     def feature_intervention(
@@ -623,7 +633,7 @@ class ReplacementModel(HookedTransformer):
             apply_activation_function=apply_activation_function,
         )
 
-        hooks, activation_cache = feature_intervention_hook_output
+        hooks, _, activation_cache = feature_intervention_hook_output
 
         with self.hooks(hooks):
             logits = self(inputs)
