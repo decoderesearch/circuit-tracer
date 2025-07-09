@@ -586,6 +586,7 @@ class ReplacementModel(HookedTransformer):
 
         cached_logits = [None]  # Use a list so we can mutate it
         def logit_cache_hook(activations, hook):
+            # we need to manually apply the softcap (if used by the model), as it comes post-hook
             if self.cfg.output_logits_soft_cap > 0.0:
                 cached_logits[0] = self.cfg.output_logits_soft_cap * F.tanh(
                         activations / self.cfg.output_logits_soft_cap)
