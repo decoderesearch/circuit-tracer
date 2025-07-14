@@ -11,6 +11,7 @@ from circuit_tracer.attribution import attribute
 from circuit_tracer.replacement_model import ReplacementModel
 from circuit_tracer.transcoder import SingleLayerTranscoder
 from circuit_tracer.transcoder.activation_functions import TopK
+from circuit_tracer.utils.device import get_default_device
 
 sys.path.append(os.path.dirname(__file__))
 from test_attributions_gemma import verify_feature_edges, verify_token_and_error_edges
@@ -65,7 +66,7 @@ def verify_small_llama_model(s: torch.Tensor):
         "attn_types": None,
         "init_mode": "gpt2",
         "normalization_type": "RMSPre",
-        "device": device(type="cuda"),
+        "device": get_default_device(),
         "n_devices": 1,
         "attention_dir": "causal",
         "attn_only": False,
@@ -144,7 +145,7 @@ def verify_large_llama_model(s: torch.Tensor):
         "attn_types": None,
         "init_mode": "gpt2",
         "normalization_type": "RMSPre",
-        "device": device(type="cuda"),
+        "device": get_default_device(),
         "n_devices": 1,
         "attention_dir": "causal",
         "attn_only": False,

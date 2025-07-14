@@ -10,6 +10,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.transcoder import SingleLayerTranscoder, load_transcoder_set
+from circuit_tracer.utils.device import get_default_device
 
 
 class ReplacementMLP(nn.Module):
@@ -127,7 +128,7 @@ class ReplacementModel(HookedTransformer):
         cls,
         model_name: str,
         transcoder_set: str,
-        device: Optional[torch.device] = torch.device("cuda"),
+        device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = torch.float32,
         **kwargs,
     ) -> "ReplacementModel":
@@ -139,11 +140,14 @@ class ReplacementModel(HookedTransformer):
             transcoder_set (str): Either a predefined transcoder set name, or a config file
                 defining where to load them from
             device (torch.device, Optional): the device onto which to load the transcoders
-                and HookedTransformer.
+                and HookedTransformer. Defaults to None (auto-detect).
 
         Returns:
             ReplacementModel: The loaded ReplacementModel
         """
+        if device is None:
+            device = get_default_device()
+            
         transcoders, feature_input_hook, feature_output_hook, scan = load_transcoder_set(
             transcoder_set, device=device, dtype=dtype
         )
@@ -289,6 +293,10 @@ class ReplacementModel(HookedTransformer):
             if zero_bos:
                 transcoder_acts[0] = 0
             if sparse:
+                # MPS backend does not currently support sparse tensors,
+                # so force a conversion to CPU if mps is in use
+                if transcoder_acts.device.type == "mps":
+                    transcoder_acts = transcoder_acts.cpu()
                 activation_matrix[layer] = transcoder_acts.to_sparse()
             else:
                 activation_matrix[layer] = transcoder_acts

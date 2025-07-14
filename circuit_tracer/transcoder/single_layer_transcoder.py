@@ -14,6 +14,7 @@ from torch import nn
 import circuit_tracer
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.utils.hf_utils import download_hf_uris, parse_hf_uri
+from circuit_tracer.utils import get_default_device
 
 
 class SingleLayerTranscoder(nn.Module):
@@ -102,10 +103,13 @@ class SingleLayerTranscoder(nn.Module):
 def load_gemma_scope_transcoder(
     path: str,
     layer: int,
-    device: Optional[torch.device] = torch.device("cuda"),
+    device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = torch.float32,
     revision: Optional[str] = None,
 ) -> SingleLayerTranscoder:
+    if device is None:
+        device = get_default_device()
+
     if os.path.isfile(path):
         path_to_params = path
     else:
@@ -138,9 +142,12 @@ def load_gemma_scope_transcoder(
 def load_relu_transcoder(
     path: str,
     layer: int,
-    device: torch.device = torch.device("cuda"),
+    device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = torch.float32,
 ):
+    if device is None:
+        device = get_default_device()
+
     param_dict = load_file(path, device=device.type)
     W_enc = param_dict["W_enc"]
     d_sae, d_model = W_enc.shape
@@ -169,19 +176,21 @@ TranscoderSettings = namedtuple(
 
 def load_transcoder_set(
     transcoder_config_file: str,
-    device: Optional[torch.device] = torch.device("cuda"),
+    device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = torch.float32,
 ) -> TranscoderSettings:
     """Loads either a preset set of transformers, or a set specified by a file.
 
     Args:
         transcoder_config_file (str): _description_
-        device (Optional[torch.device], optional): _description_. Defaults to torch.device('cuda').
+        device (Optional[torch.device], optional): _description_. Defaults to None (auto-detect).
 
     Returns:
         TranscoderSettings: A namedtuple consisting of the transcoder dict,
         and their feature input hook, feature output hook and associated scan.
     """
+    if device is None:
+        device = get_default_device()
 
     scan = None
     # try to match a preset, and grab its config

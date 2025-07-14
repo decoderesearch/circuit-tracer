@@ -36,6 +36,7 @@ from transformer_lens.hook_points import HookPoint
 from circuit_tracer.graph import Graph
 from circuit_tracer.replacement_model import ReplacementModel
 from circuit_tracer.utils.disk_offload import offload_modules
+from circuit_tracer.utils.device import get_default_device
 
 
 class AttributionContext:
@@ -303,7 +304,16 @@ def select_scaled_decoder_vecs(
     for layer, row in enumerate(activations):
         _, feat_idx = row.coalesce().indices()
         rows.append(transcoders[layer].W_dec[feat_idx])
-    return torch.cat(rows) * activations.values()[:, None]
+    activation_vals = activations.values()[:, None]
+    decoder_rows = torch.cat(rows)
+
+    # We might have moved sparse tensors to CPU (if MPS, avoiding SparseMPS
+    # backend issues), but activation_vals is no longer sparse so it should
+    # "move" to match the device of decoder_rows.
+    # If the device was not MPS, devices already match and this is a no-op.
+    # If the device was MPS, this "move" is in unified memory anyways.
+    activation_vals = activation_vals.to(decoder_rows.device)
+    return decoder_rows * activation_vals
 
 
 @torch.no_grad()
@@ -320,7 +330,7 @@ def select_encoder_rows(
 
 
 def compute_partial_influences(edge_matrix, logit_p, row_to_node_index, max_iter=128, device=None):
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or get_default_device()
 
     normalized_matrix = torch.empty_like(edge_matrix, device=device).copy_(edge_matrix)
     normalized_matrix = normalized_matrix.abs_()

@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from circuit_tracer.frontend.graph_models import Metadata, Model, Node, QParams
 from circuit_tracer.frontend.utils import add_graph_metadata, process_token
 from circuit_tracer.graph import Graph, prune_graph
+from circuit_tracer.utils.device import get_default_device
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ def create_graph_files(
             )
         scan = graph.scan
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_default_device()
     graph.to(device)
     node_mask, edge_mask, cumulative_scores = (
         el.cpu() for el in prune_graph(graph, node_threshold, edge_threshold)

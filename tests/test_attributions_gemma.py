@@ -12,6 +12,7 @@ from circuit_tracer.graph import Graph
 from circuit_tracer.replacement_model import ReplacementModel
 from circuit_tracer.transcoder import SingleLayerTranscoder
 from circuit_tracer.transcoder.activation_functions import JumpReLU
+from circuit_tracer.utils.device import get_default_device
 
 
 def verify_token_and_error_edges(
@@ -24,9 +25,10 @@ def verify_token_and_error_edges(
     logit_rtol=1e-3,
 ):
     s = graph.input_tokens
-    adjacency_matrix = graph.adjacency_matrix.cuda()
-    active_features = graph.active_features.cuda()
-    logit_tokens = graph.logit_tokens.cuda()
+    device = get_default_device()
+    adjacency_matrix = graph.adjacency_matrix.to(device)
+    active_features = graph.active_features.to(device)
+    logit_tokens = graph.logit_tokens.to(device)
     total_active_features = active_features.size(0)
     pos_start = 1 if delete_bos else 0
 
@@ -114,9 +116,10 @@ def verify_feature_edges(
     logit_rtol=1e-3,
 ):
     s = graph.input_tokens
-    adjacency_matrix = graph.adjacency_matrix.cuda()
-    active_features = graph.active_features.cuda()
-    logit_tokens = graph.logit_tokens.cuda()
+    device = get_default_device()
+    adjacency_matrix = graph.adjacency_matrix.to(device)
+    active_features = graph.active_features.to(device)
+    logit_tokens = graph.logit_tokens.to(device)
     total_active_features = active_features.size(0)
 
     logits, activation_cache = model.get_activations(s, apply_activation_function=False)
@@ -223,7 +226,7 @@ def verify_small_gemma_model(s: torch.Tensor):
         "attn_types": ["global", "local"],
         "init_mode": "gpt2",
         "normalization_type": "RMSPre",
-        "device": device(type="cuda"),
+        "device": get_default_device(),
         "n_devices": 1,
         "attention_dir": "causal",
         "attn_only": False,
@@ -317,7 +320,7 @@ def verify_large_gemma_model(s: torch.Tensor):
         ],
         "init_mode": "gpt2",
         "normalization_type": "RMSPre",
-        "device": device(type="cuda"),
+        "device": get_default_device(),
         "n_devices": 1,
         "attention_dir": "causal",
         "attn_only": False,
