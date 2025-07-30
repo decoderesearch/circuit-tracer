@@ -17,7 +17,7 @@ You can also find circuits and visualize them in one of three ways:
 
 Working with Gemma-2 (2B) is possible with relatively limited GPU resources; Colab GPUs have 15GB of RAM. More GPU RAM will allow you to do less offloading, and to use a larger batch size. 
 
-Currently, intervening on models with respect to the transcoder features you discover in your graphs is only possible when using `circuit-tracer` in a script or notebook, not on Neuronpedia.
+Currently, intervening on models with respect to the transcoder features you discover in your graphs is possible both when using `circuit-tracer` in a script or notebook, or on Neuronpedia for Gemma-2 (2B). To perform interventions on Neuronpedia, ensure at least one node is pinned, then click "Steer" in the subgraph.
 
 ## Installation
 To install this library, clone it and run the command  `pip install .` in its directory.
