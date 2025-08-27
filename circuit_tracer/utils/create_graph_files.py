@@ -7,7 +7,7 @@ import torch
 from transformers import AutoTokenizer
 
 from circuit_tracer.frontend.graph_models import Metadata, Model, Node, QParams
-from circuit_tracer.frontend.utils import add_graph_metadata, process_token
+from circuit_tracer.frontend.utils import add_graph_metadata
 from circuit_tracer.graph import Graph, prune_graph
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
             nodes[node_idx] = Node.logit_node(
                 pos=graph.n_pos - 1,
                 vocab_idx=graph.logit_tokens[pos],
-                token=process_token(tokenizer.decode(graph.logit_tokens[pos])),
+                token=tokenizer.decode(graph.logit_tokens[pos]),
                 target_logit=pos == 0,
                 token_prob=graph.logit_probabilities[pos].item(),
                 num_layers=layers,
@@ -118,7 +118,7 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
         slug=slug,
         scan=scan,
         transcoder_list=transcoder_list,
-        prompt_tokens=[process_token(tokenizer.decode(t)) for t in graph.input_tokens],
+        prompt_tokens=[tokenizer.decode(t) for t in graph.input_tokens],
         prompt=graph.input_string,
         node_threshold=node_threshold,
     )
