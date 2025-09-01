@@ -183,6 +183,10 @@ window.utilCg = (function(){
     return {nodes, links}
   }
 
+  function replaceWhitespace(token) {
+    return token.replaceAll("\n", "⏎").replaceAll("\t", "→").replaceAll("\r", "↵")
+  }
+
   // Decorates and mutates data.json
   // - Adds pointers between node and links
   // - Deletes very common features
@@ -203,6 +207,9 @@ window.utilCg = (function(){
         visState.pinnedIds.includes(d.nodeId)
       )
     }
+
+    // update all prompt tokens to replace \n, \t, \r with ⏎, →, ↵
+    data.metadata.prompt_tokens = data.metadata.prompt_tokens.map(replaceWhitespace)
 
     nodes.forEach((d, i) => {
       // To make hover state work across prompts, drop ctx from node id
