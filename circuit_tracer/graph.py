@@ -2,6 +2,7 @@ from typing import NamedTuple
 
 import torch
 from transformer_lens import HookedTransformerConfig
+from circuit_tracer.utils.decode_url_features import Feature
 
 
 class Graph:
@@ -298,7 +299,10 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
 
 
 def compute_subgraph_scores(
-    graph: Graph, node_ids: list[str], node_mask: torch.Tensor, edge_mask: torch.Tensor
+    graph: Graph,
+    pinned_features: list[Feature],
+    node_mask: torch.Tensor,
+    edge_mask: torch.Tensor,
 ) -> tuple[float, float]:
     """Compute metrics for evaluating a subgraph by treating pruned features as errors.
 
@@ -309,9 +313,8 @@ def compute_subgraph_scores(
     Args:
         graph: The original (unpruned) computation graph containing nodes for features,
                errors, tokens, and logits, along with their connections.
-        node_ids: List of node_id strings for feature nodes to include in the subgraph.
-                 Format: "layer_featidx_pos" (e.g., "5_123_10" for layer 5, feature 123,
-                 position 10). Features not in this list are treated as pruned/errors.
+        pinned_features: List of Features to include in the subgraph. Features not
+                        in this list are treated as pruned/errors.
         node_mask: Boolean tensor from prune_graph indicating which nodes survived pruning.
         edge_mask: Boolean tensor from prune_graph indicating which edges survived pruning.
 
@@ -327,28 +330,21 @@ def compute_subgraph_scores(
     n_features = len(graph.selected_features)
     n_layers = graph.cfg.n_layers
 
-    # Convert node_ids to a subgraph feature mask
-    subgraph_feature_mask = torch.zeros(n_features, dtype=torch.bool)
+    # Create a boolean mask for features in the subgraph
+    subgraph_feature_mask = torch.zeros(
+        n_features, dtype=torch.bool, device=graph.active_features.device
+    )
 
-    # Parse node_ids to extract (layer, pos, feat_idx)
-    target_features = set()
-    for node_id in node_ids:
-        parts = node_id.split("_")
-        # Feature nodes have format "layer_featidx_pos"
-        # Skip non-feature nodes (token: "E_vocab_pos", logit: where layer > n_layers)
-        if len(parts) == 3 and not node_id.startswith("E_"):
-            layer, feat_idx, pos = int(parts[0]), int(parts[1]), int(parts[2])
-            # Only consider if it's a valid layer (not a logit node)
-            if layer < n_layers:
-                target_features.add((layer, pos, feat_idx))
-
-    # Find matching indices in selected_features
-    for i in range(n_features):
-        active_idx = graph.selected_features[i].item()
-        layer, pos, feat_idx = graph.active_features[active_idx].tolist()  # type: ignore
-
-        if (layer, pos, feat_idx) in target_features:
-            subgraph_feature_mask[i] = True
+    for feature_idx in range(n_features):
+        layer, pos, feat_idx = graph.active_features[graph.selected_features[feature_idx]].tolist()
+        for pinned_feature in pinned_features:
+            if (
+                pinned_feature.layer == layer
+                and pinned_feature.pos == pos
+                and pinned_feature.feature_idx == feat_idx
+            ):
+                subgraph_feature_mask[feature_idx] = True
+                break
 
     # In the adjacency matrix:
     # - First n_features rows/cols are feature nodes
