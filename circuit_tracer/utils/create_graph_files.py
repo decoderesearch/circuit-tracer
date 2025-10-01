@@ -191,7 +191,6 @@ def create_graph_files(
     scan=None,
     node_threshold=0.8,
     edge_threshold=0.98,
-    save_pruned_graph_pt=False,
 ):
     total_start_time = time.time()
 
@@ -224,12 +223,6 @@ def create_graph_files(
     nodes = create_nodes(graph, node_mask, tokenizer, cumulative_scores)
     used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask)
     model = build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer)
-
-    if save_pruned_graph_pt:
-        pruned_graph = create_pruned_graph(graph, node_mask, edge_mask)
-        pruned_graph_path = os.path.join(output_path, f"{slug}_pruned.pt")
-        pruned_graph.to_pt(pruned_graph_path)
-        logger.info(f"Pruned graph saved to {pruned_graph_path}")
 
     # Write the output locally
     with open(os.path.join(output_path, f"{slug}.json"), "w") as f:
