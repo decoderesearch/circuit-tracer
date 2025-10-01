@@ -345,7 +345,7 @@ def compute_subgraph_scores(
     # Find matching indices in selected_features
     for i in range(n_features):
         active_idx = graph.selected_features[i].item()
-        layer, pos, feat_idx = graph.active_features[active_idx].tolist()
+        layer, pos, feat_idx = graph.active_features[active_idx].tolist() # type: ignore
 
         if (layer, pos, feat_idx) in target_features:
             subgraph_feature_mask[i] = True
