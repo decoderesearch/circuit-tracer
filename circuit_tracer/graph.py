@@ -248,6 +248,47 @@ def prune_graph(
     return PruneResult(node_mask, edge_mask, final_scores)
 
 
+def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor) -> Graph:
+    """Create a pruned version of the graph by applying node and edge masks.
+
+    Args:
+        graph: The original graph
+        node_mask: Boolean tensor indicating which nodes to keep
+        edge_mask: Boolean tensor indicating which edges to keep
+
+    Returns:
+        A new Graph object containing only the pruned nodes and edges
+
+    Note:
+        The pruned graph maintains the same structure as the original graph
+        (same dimensions for adjacency matrix, selected_features, etc.) but
+        with removed nodes/edges represented as zeros in the adjacency matrix.
+        This ensures that functions like compute_graph_scores can correctly
+        interpret the graph structure.
+    """
+    # Apply masks to adjacency matrix - this is the ONLY change we make
+    # All removed nodes/edges are represented as zeros
+    pruned_adjacency = graph.adjacency_matrix.clone()
+    pruned_adjacency[~node_mask] = 0
+    pruned_adjacency[:, ~node_mask] = 0
+    pruned_adjacency = pruned_adjacency * edge_mask
+
+    # Keep all other fields unchanged to preserve the graph structure
+    # The pruning is represented entirely by the zeros in the adjacency matrix
+    return Graph(
+        input_string=graph.input_string,
+        input_tokens=graph.input_tokens,
+        active_features=graph.active_features,
+        adjacency_matrix=pruned_adjacency,
+        cfg=graph.cfg,
+        logit_tokens=graph.logit_tokens,
+        logit_probabilities=graph.logit_probabilities,
+        selected_features=graph.selected_features,
+        activation_values=graph.activation_values,
+        scan=graph.scan,
+    )
+
+
 def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     """Compute metrics for evaluating how well the graph captures the model's computation.
     This function calculates two complementary scores that measure how much of the model's
