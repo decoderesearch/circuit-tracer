@@ -286,14 +286,10 @@ def test_compute_subgraph_scores():
     )
 
     # Scores should be lower when excluding Feature 1
-    assert (
-        replacement_partial <= replacement_all
-    ), "Partial subgraph should have lower or equal replacement score"
+    assert replacement_partial <= replacement_all, (
+        "Partial subgraph should have lower or equal replacement score"
+    )
 
     # Scores should still be in valid range
-    assert (
-        0 <= replacement_partial <= 1
-    ), f"Replacement score {replacement_partial} out of range"
-    assert (
-        0 <= completeness_partial <= 1
-    ), f"Completeness score {completeness_partial} out of range"
+    assert 0 <= replacement_partial <= 1, f"Replacement score {replacement_partial} out of range"
+    assert 0 <= completeness_partial <= 1, f"Completeness score {completeness_partial} out of range"
