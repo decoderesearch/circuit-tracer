@@ -295,3 +295,109 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     completeness_score = (non_error_fractions * output_influence).sum() / output_influence.sum()
 
     return replacement_score.item(), completeness_score.item()
+
+def compute_subgraph_scores(
+    graph: Graph, node_ids: list[str]
+) -> tuple[float, float]:
+    """Compute metrics for evaluating a subgraph by treating pruned features as errors.
+
+    This function treats features not included in the subgraph as error nodes by merging
+    their edge weights with the corresponding error nodes (based on layer and position),
+    then computes replacement and completeness scores using the modified adjacency matrix.
+
+    Args:
+        graph: A pruned computation graph (as created by create_pruned_graph) containing
+               only the nodes that survived initial pruning. The graph contains nodes for
+               features, errors, tokens, and logits, along with their connections.
+        node_ids: List of node_id strings for feature nodes to include in the subgraph.
+                 Format: "layer_featidx_pos" (e.g., "5_123_10" for layer 5, feature 123,
+                 position 10). Features not in this list are treated as pruned/errors.
+
+    Returns:
+        tuple[float, float]: A tuple containing:
+            - replacement_score: Fraction of token-to-logit influence through subgraph
+                               features (0-1)
+            - completeness_score: Weighted fraction of non-error inputs across all nodes
+                                 in the subgraph (0-1)
+    """
+    n_logits = len(graph.logit_tokens)
+    n_tokens = len(graph.input_tokens)
+    n_features = len(graph.selected_features)  # Only features in the pruned graph
+    n_layers = graph.cfg.n_layers
+
+    # Convert node_ids to a subgraph feature mask
+    subgraph_feature_mask = torch.zeros(n_features, dtype=torch.bool)
+    
+    # Parse node_ids to extract (layer, pos, feat_idx)
+    target_features = set()
+    for node_id in node_ids:
+        parts = node_id.split('_')
+        # Feature nodes have format "layer_featidx_pos"
+        # Skip non-feature nodes (token: "E_vocab_pos", logit: where layer > n_layers)
+        if len(parts) == 3 and not node_id.startswith('E_'):
+            layer, feat_idx, pos = int(parts[0]), int(parts[1]), int(parts[2])
+            # Only consider if it's a valid layer (not a logit node)
+            if layer < n_layers:
+                target_features.add((layer, pos, feat_idx))
+    
+    # Find matching indices in selected_features
+    for i in range(n_features):
+        active_idx = graph.selected_features[i].item()
+        layer, pos, feat_idx = graph.active_features[active_idx].tolist()
+        
+        if (layer, pos, feat_idx) in target_features:
+            subgraph_feature_mask[i] = True
+
+    # In the pruned graph's adjacency matrix:
+    # - First n_features rows/cols are the surviving feature nodes
+    # - Next n_tokens * n_layers rows/cols are error nodes (one per layer per token)
+    # - Next n_tokens rows/cols are token embedding nodes
+    # - Last n_logits rows/cols are logit nodes
+    error_start = n_features
+    error_end = error_start + n_tokens * n_layers
+    token_end = error_end + n_tokens
+
+    # Create modified adjacency matrix
+    modified_adjacency = graph.adjacency_matrix.clone()
+
+    # For each pruned feature, merge its edges with the corresponding error node
+    for feature_idx in range(n_features):
+        if subgraph_feature_mask[feature_idx].item():
+            # Feature is pinned (included in subgraph)
+            pass
+        else:
+            # Feature is pruned (not included in subgraph)
+            # Get the layer and position of this feature from active_features
+            # graph.selected_features[feature_idx] is an index into active_features
+            layer, pos, _ = graph.active_features[graph.selected_features[feature_idx]]
+
+            # Calculate the corresponding error node index
+            # Error nodes are organized as: error[layer][position]
+            # Index = error_start + layer * n_tokens + pos
+            error_node_idx = error_start + int(layer.item()) * n_tokens + int(pos.item())
+
+            # Add this feature's outgoing edges to the error node's outgoing edges
+            modified_adjacency[:, error_node_idx] += modified_adjacency[:, feature_idx]
+
+            # Zero out the pruned feature's edges (both incoming and outgoing)
+            modified_adjacency[feature_idx, :] = 0
+            modified_adjacency[:, feature_idx] = 0
+
+    # Compute scores using the modified adjacency matrix
+    logit_weights = torch.zeros(
+        modified_adjacency.shape[0], device=modified_adjacency.device
+    )
+    logit_weights[-n_logits:] = graph.logit_probabilities
+
+    normalized_matrix = normalize_matrix(modified_adjacency)
+    node_influence = compute_influence(normalized_matrix, logit_weights)
+    
+    token_influence = node_influence[error_end:token_end].sum()
+    error_influence = node_influence[error_start:error_end].sum()
+    replacement_score = token_influence / (token_influence + error_influence)
+    non_error_fractions = 1 - normalized_matrix[:, error_start:error_end].sum(dim=-1)
+    
+    output_influence = node_influence + logit_weights    
+    completeness_score = (non_error_fractions * output_influence).sum() / output_influence.sum()
+
+    return replacement_score.item(), completeness_score.item()

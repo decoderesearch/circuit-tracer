@@ -143,6 +143,46 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
 
     return full_model
 
+def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor) -> Graph:
+    """Create a pruned version of the graph by applying node and edge masks.
+    
+    Args:
+        graph: The original graph
+        node_mask: Boolean tensor indicating which nodes to keep
+        edge_mask: Boolean tensor indicating which edges to keep
+    
+    Returns:
+        A new Graph object containing only the pruned nodes and edges
+    
+    Note:
+        The pruned graph maintains the same structure as the original graph
+        (same dimensions for adjacency matrix, selected_features, etc.) but
+        with removed nodes/edges represented as zeros in the adjacency matrix.
+        This ensures that functions like compute_graph_scores can correctly
+        interpret the graph structure.
+    """
+    # Apply masks to adjacency matrix - this is the ONLY change we make
+    # All removed nodes/edges are represented as zeros
+    pruned_adjacency = graph.adjacency_matrix.clone()
+    pruned_adjacency[~node_mask] = 0
+    pruned_adjacency[:, ~node_mask] = 0
+    pruned_adjacency = pruned_adjacency * edge_mask
+    
+    # Keep all other fields unchanged to preserve the graph structure
+    # The pruning is represented entirely by the zeros in the adjacency matrix
+    return Graph(
+        input_string=graph.input_string,
+        input_tokens=graph.input_tokens,
+        active_features=graph.active_features,
+        adjacency_matrix=pruned_adjacency,
+        cfg=graph.cfg,
+        logit_tokens=graph.logit_tokens,
+        logit_probabilities=graph.logit_probabilities,
+        selected_features=graph.selected_features,
+        activation_values=graph.activation_values,
+        scan=graph.scan,
+    )
+
 
 def create_graph_files(
     graph_or_path: Graph | str,
@@ -151,6 +191,7 @@ def create_graph_files(
     scan=None,
     node_threshold=0.8,
     edge_threshold=0.98,
+    save_pruned_graph_pt=False,
 ):
     total_start_time = time.time()
 
@@ -183,6 +224,12 @@ def create_graph_files(
     nodes = create_nodes(graph, node_mask, tokenizer, cumulative_scores)
     used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask)
     model = build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer)
+
+    if save_pruned_graph_pt:
+        pruned_graph = create_pruned_graph(graph, node_mask, edge_mask)
+        pruned_graph_path = os.path.join(output_path, f"{slug}_pruned.pt")
+        pruned_graph.to_pt(pruned_graph_path)
+        logger.info(f"Pruned graph saved to {pruned_graph_path}")
 
     # Write the output locally
     with open(os.path.join(output_path, f"{slug}.json"), "w") as f:
