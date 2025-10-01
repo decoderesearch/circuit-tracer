@@ -2,7 +2,6 @@ from typing import NamedTuple
 
 import torch
 from transformer_lens import HookedTransformerConfig
-from circuit_tracer.utils.decode_url_features import Feature
 
 
 class Graph:
@@ -341,7 +340,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
 
 def compute_subgraph_scores(
     graph: Graph,
-    pinned_features: list[Feature],
+    pinned_features: list[tuple[int, int, int]],  # (layer, pos, feature_idx)
 ) -> tuple[float, float]:
     """Compute metrics for evaluating a subgraph by treating pruned features as errors.
 
@@ -352,8 +351,8 @@ def compute_subgraph_scores(
     Args:
         graph: The computation graph (can be original or pruned) containing nodes for
                features, errors, tokens, and logits, along with their connections.
-        pinned_features: List of Features to include in the subgraph. Features not
-                        in this list are treated as pruned/errors.
+        pinned_features: List of (layer, pos, feature_idx) tuples to include in the subgraph.
+                        Features not in this list are treated as pruned/errors.
 
     Returns:
         tuple[float, float]: A tuple containing:
@@ -376,9 +375,9 @@ def compute_subgraph_scores(
         layer, pos, feat_idx = graph.active_features[graph.selected_features[feature_idx]].tolist()
         for pinned_feature in pinned_features:
             if (
-                pinned_feature.layer == layer
-                and pinned_feature.pos == pos
-                and pinned_feature.feature_idx == feat_idx
+                pinned_feature[0] == layer
+                and pinned_feature[1] == pos
+                and pinned_feature[2] == feat_idx
             ):
                 subgraph_feature_mask[feature_idx] = True
                 break
