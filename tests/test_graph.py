@@ -2,7 +2,13 @@ import numpy as np
 import torch
 from transformer_lens import HookedTransformerConfig
 
-from circuit_tracer.graph import Graph, compute_edge_influence, compute_node_influence
+from circuit_tracer.graph import (
+    Graph,
+    compute_edge_influence,
+    compute_graph_scores,
+    compute_node_influence,
+    compute_subgraph_scores,
+)
 from circuit_tracer.utils import get_default_device
 
 
@@ -131,3 +137,163 @@ def test_small_graph():
 
     edge_influence_on_logits = compute_edge_influence(pruned_adjacency_matrix, logit_weights)
     assert torch.allclose(edge_influence_on_logits, post_pruning_edge_matrix)
+
+
+def test_compute_graph_scores():
+    """Test compute_graph_scores with a small test graph."""
+    # Create a small graph with:
+    # - 2 features (nodes 0-1)
+    # - 4 error nodes: 2 layers * 2 tokens (nodes 2-5)
+    # - 2 token nodes (nodes 6-7)
+    # - 1 logit node (node 8)
+
+    # Build adjacency matrix (9x9)
+    # Token -> Feature -> Logit path (high replacement score)
+    adjacency_matrix = torch.zeros([9, 9])
+
+    # Token 0 (node 6) -> Feature 0 (node 0): 0.8
+    adjacency_matrix[0, 6] = 0.8
+    # Token 1 (node 7) -> Feature 1 (node 1): 0.8
+    adjacency_matrix[1, 7] = 0.8
+
+    # Feature 0 (node 0) -> Logit (node 8): 0.5
+    adjacency_matrix[8, 0] = 0.5
+    # Feature 1 (node 1) -> Logit (node 8): 0.5
+    adjacency_matrix[8, 1] = 0.5
+
+    # Token 0 (node 6) -> Error (node 2): 0.2
+    adjacency_matrix[2, 6] = 0.2
+    # Token 1 (node 7) -> Error (node 3): 0.2
+    adjacency_matrix[3, 7] = 0.2
+
+    # Error (node 2) -> Logit (node 8): 0.1
+    adjacency_matrix[8, 2] = 0.1
+
+    # Dummy model config
+    cfg_dict = {
+        "n_layers": 2,
+        "d_model": 8,
+        "n_ctx": 8192,
+        "d_head": 4,
+        "model_name": "test-model",
+        "n_heads": 2,
+        "d_mlp": 16,
+        "act_fn": "gelu",
+        "d_vocab": 16,
+    }
+    cfg = HookedTransformerConfig.from_dict(cfg_dict)
+
+    # Create graph
+    test_graph = Graph(
+        input_string="ab",
+        input_tokens=torch.tensor([0, 1]),
+        active_features=torch.tensor([[0, 0, 100], [1, 1, 200]]),
+        adjacency_matrix=adjacency_matrix,
+        cfg=cfg,
+        logit_tokens=torch.tensor([5]),
+        logit_probabilities=torch.tensor([1.0]),
+        selected_features=torch.tensor([0, 1]),
+        activation_values=torch.tensor([1.0, 2.0]),
+    )
+
+    # Compute scores
+    replacement_score, completeness_score = compute_graph_scores(test_graph)
+
+    # With mostly feature paths and few error paths, scores should be high
+    assert replacement_score > 0.5, f"Expected high replacement score, got {replacement_score}"
+    assert completeness_score > 0.5, f"Expected high completeness score, got {completeness_score}"
+
+    # Scores should be between 0 and 1
+    assert 0 <= replacement_score <= 1, f"Replacement score {replacement_score} out of range"
+    assert 0 <= completeness_score <= 1, f"Completeness score {completeness_score} out of range"
+
+
+def test_compute_subgraph_scores():
+    """Test compute_subgraph_scores with a small test graph."""
+    # Create a small graph with:
+    # - 3 features (nodes 0-2)
+    # - 4 error nodes: 2 layers * 2 tokens (nodes 3-6)
+    # - 2 token nodes (nodes 7-8)
+    # - 1 logit node (node 9)
+
+    # Build adjacency matrix (10x10)
+    adjacency_matrix = torch.zeros([10, 10])
+
+    # Token 0 (node 7) -> Feature 0 (node 0): 0.5
+    adjacency_matrix[0, 7] = 0.5
+    # Token 0 (node 7) -> Feature 1 (node 1): 0.3
+    adjacency_matrix[1, 7] = 0.3
+    # Token 1 (node 8) -> Feature 2 (node 2): 0.6
+    adjacency_matrix[2, 8] = 0.6
+
+    # Feature 0 (node 0) -> Logit (node 9): 0.4
+    adjacency_matrix[9, 0] = 0.4
+    # Feature 1 (node 1) -> Logit (node 9): 0.3
+    adjacency_matrix[9, 1] = 0.3
+    # Feature 2 (node 2) -> Logit (node 9): 0.5
+    adjacency_matrix[9, 2] = 0.5
+
+    # Token 0 -> Error (node 3): 0.2
+    adjacency_matrix[3, 7] = 0.2
+    # Error (node 3) -> Logit: 0.1
+    adjacency_matrix[9, 3] = 0.1
+
+    # Dummy model config
+    cfg_dict = {
+        "n_layers": 2,
+        "d_model": 8,
+        "n_ctx": 8192,
+        "d_head": 4,
+        "model_name": "test-model",
+        "n_heads": 2,
+        "d_mlp": 16,
+        "act_fn": "gelu",
+        "d_vocab": 16,
+    }
+    cfg = HookedTransformerConfig.from_dict(cfg_dict)
+
+    # Create graph
+    # Features: (layer, pos, feature_idx)
+    # Feature 0: layer 0, pos 0, feature 100
+    # Feature 1: layer 0, pos 0, feature 200
+    # Feature 2: layer 1, pos 1, feature 300
+    test_graph = Graph(
+        input_string="ab",
+        input_tokens=torch.tensor([0, 1]),
+        active_features=torch.tensor([[0, 0, 100], [0, 0, 200], [1, 1, 300]]),
+        adjacency_matrix=adjacency_matrix,
+        cfg=cfg,
+        logit_tokens=torch.tensor([5]),
+        logit_probabilities=torch.tensor([1.0]),
+        selected_features=torch.tensor([0, 1, 2]),
+        activation_values=torch.tensor([1.0, 2.0, 3.0]),
+    )
+
+    # Test 1: Include all features in subgraph
+    all_features = [(0, 0, 100), (0, 0, 200), (1, 1, 300)]
+    replacement_all, completeness_all = compute_subgraph_scores(test_graph, all_features)
+
+    # With all features, scores should match compute_graph_scores
+    graph_replacement, graph_completeness = compute_graph_scores(test_graph)
+    assert torch.isclose(
+        torch.tensor(replacement_all), torch.tensor(graph_replacement), atol=1e-5
+    ), "Subgraph with all features should match full graph"
+
+    # Test 2: Include only Feature 0 and 2 (exclude Feature 1)
+    partial_features = [(0, 0, 100), (1, 1, 300)]
+    replacement_partial, completeness_partial = compute_subgraph_scores(
+        test_graph, partial_features
+    )
+
+    # Scores should be lower when excluding Feature 1
+    assert (
+        replacement_partial <= replacement_all
+    ), "Partial subgraph should have lower or equal replacement score"
+
+    # Scores should still be in valid range
+    assert (
+        0 <= replacement_partial <= 1
+    ), f"Replacement score {replacement_partial} out of range"
+    assert (
+        0 <= completeness_partial <= 1
+    ), f"Completeness score {completeness_partial} out of range"
