@@ -297,7 +297,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     return replacement_score.item(), completeness_score.item()
 
 def compute_subgraph_scores(
-    graph: Graph, node_ids: list[str]
+    graph: Graph, node_ids: list[str], node_mask: torch.Tensor, edge_mask: torch.Tensor
 ) -> tuple[float, float]:
     """Compute metrics for evaluating a subgraph by treating pruned features as errors.
 
@@ -306,12 +306,13 @@ def compute_subgraph_scores(
     then computes replacement and completeness scores using the modified adjacency matrix.
 
     Args:
-        graph: A pruned computation graph (as created by create_pruned_graph) containing
-               only the nodes that survived initial pruning. The graph contains nodes for
-               features, errors, tokens, and logits, along with their connections.
+        graph: The original (unpruned) computation graph containing nodes for features,
+               errors, tokens, and logits, along with their connections.
         node_ids: List of node_id strings for feature nodes to include in the subgraph.
                  Format: "layer_featidx_pos" (e.g., "5_123_10" for layer 5, feature 123,
                  position 10). Features not in this list are treated as pruned/errors.
+        node_mask: Boolean tensor from prune_graph indicating which nodes survived pruning.
+        edge_mask: Boolean tensor from prune_graph indicating which edges survived pruning.
 
     Returns:
         tuple[float, float]: A tuple containing:
@@ -322,7 +323,7 @@ def compute_subgraph_scores(
     """
     n_logits = len(graph.logit_tokens)
     n_tokens = len(graph.input_tokens)
-    n_features = len(graph.selected_features)  # Only features in the pruned graph
+    n_features = len(graph.selected_features)
     n_layers = graph.cfg.n_layers
 
     # Convert node_ids to a subgraph feature mask
@@ -348,8 +349,8 @@ def compute_subgraph_scores(
         if (layer, pos, feat_idx) in target_features:
             subgraph_feature_mask[i] = True
 
-    # In the pruned graph's adjacency matrix:
-    # - First n_features rows/cols are the surviving feature nodes
+    # In the adjacency matrix:
+    # - First n_features rows/cols are feature nodes
     # - Next n_tokens * n_layers rows/cols are error nodes (one per layer per token)
     # - Next n_tokens rows/cols are token embedding nodes
     # - Last n_logits rows/cols are logit nodes
@@ -357,18 +358,24 @@ def compute_subgraph_scores(
     error_end = error_start + n_tokens * n_layers
     token_end = error_end + n_tokens
 
-    # Create modified adjacency matrix
+    # Start with the original adjacency matrix (before pruning)
     modified_adjacency = graph.adjacency_matrix.clone()
 
-    # For each pruned feature, merge its edges with the corresponding error node
+    # For features that survived initial pruning but are NOT in the subgraph,
+    # merge their edges with the corresponding error nodes
     for feature_idx in range(n_features):
+        # Check if this feature survived the initial pruning
+        if not node_mask[feature_idx]:
+            # Feature was already pruned in initial pruning, skip it
+            # (its contribution is already captured in the error nodes)
+            continue
+            
         if subgraph_feature_mask[feature_idx].item():
-            # Feature is pinned (included in subgraph)
+            # Feature is pinned (included in subgraph), keep it
             pass
         else:
-            # Feature is pruned (not included in subgraph)
-            # Get the layer and position of this feature from active_features
-            # graph.selected_features[feature_idx] is an index into active_features
+            # Feature survived initial pruning but is NOT in the subgraph
+            # Merge its edges into the corresponding error node
             layer, pos, _ = graph.active_features[graph.selected_features[feature_idx]]
 
             # Calculate the corresponding error node index
@@ -382,6 +389,12 @@ def compute_subgraph_scores(
             # Zero out the pruned feature's edges (both incoming and outgoing)
             modified_adjacency[feature_idx, :] = 0
             modified_adjacency[:, feature_idx] = 0
+
+    # Now apply the initial pruning to the modified adjacency matrix
+    # (for nodes that didn't survive initial pruning and weren't merged above)
+    modified_adjacency[~node_mask] = 0
+    modified_adjacency[:, ~node_mask] = 0
+    modified_adjacency = modified_adjacency * edge_mask
 
     # Compute scores using the modified adjacency matrix
     logit_weights = torch.zeros(
