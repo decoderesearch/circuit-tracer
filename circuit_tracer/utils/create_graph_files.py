@@ -143,17 +143,18 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
 
     return full_model
 
+
 def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor) -> Graph:
     """Create a pruned version of the graph by applying node and edge masks.
-    
+
     Args:
         graph: The original graph
         node_mask: Boolean tensor indicating which nodes to keep
         edge_mask: Boolean tensor indicating which edges to keep
-    
+
     Returns:
         A new Graph object containing only the pruned nodes and edges
-    
+
     Note:
         The pruned graph maintains the same structure as the original graph
         (same dimensions for adjacency matrix, selected_features, etc.) but
@@ -167,7 +168,7 @@ def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.
     pruned_adjacency[~node_mask] = 0
     pruned_adjacency[:, ~node_mask] = 0
     pruned_adjacency = pruned_adjacency * edge_mask
-    
+
     # Keep all other fields unchanged to preserve the graph structure
     # The pruning is represented entirely by the zeros in the adjacency matrix
     return Graph(

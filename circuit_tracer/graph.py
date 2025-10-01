@@ -296,6 +296,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
 
     return replacement_score.item(), completeness_score.item()
 
+
 def compute_subgraph_scores(
     graph: Graph, node_ids: list[str], node_mask: torch.Tensor, edge_mask: torch.Tensor
 ) -> tuple[float, float]:
@@ -328,24 +329,24 @@ def compute_subgraph_scores(
 
     # Convert node_ids to a subgraph feature mask
     subgraph_feature_mask = torch.zeros(n_features, dtype=torch.bool)
-    
+
     # Parse node_ids to extract (layer, pos, feat_idx)
     target_features = set()
     for node_id in node_ids:
-        parts = node_id.split('_')
+        parts = node_id.split("_")
         # Feature nodes have format "layer_featidx_pos"
         # Skip non-feature nodes (token: "E_vocab_pos", logit: where layer > n_layers)
-        if len(parts) == 3 and not node_id.startswith('E_'):
+        if len(parts) == 3 and not node_id.startswith("E_"):
             layer, feat_idx, pos = int(parts[0]), int(parts[1]), int(parts[2])
             # Only consider if it's a valid layer (not a logit node)
             if layer < n_layers:
                 target_features.add((layer, pos, feat_idx))
-    
+
     # Find matching indices in selected_features
     for i in range(n_features):
         active_idx = graph.selected_features[i].item()
         layer, pos, feat_idx = graph.active_features[active_idx].tolist()
-        
+
         if (layer, pos, feat_idx) in target_features:
             subgraph_feature_mask[i] = True
 
@@ -369,7 +370,7 @@ def compute_subgraph_scores(
             # Feature was already pruned in initial pruning, skip it
             # (its contribution is already captured in the error nodes)
             continue
-            
+
         if subgraph_feature_mask[feature_idx].item():
             # Feature is pinned (included in subgraph), keep it
             pass
@@ -397,20 +398,18 @@ def compute_subgraph_scores(
     modified_adjacency = modified_adjacency * edge_mask
 
     # Compute scores using the modified adjacency matrix
-    logit_weights = torch.zeros(
-        modified_adjacency.shape[0], device=modified_adjacency.device
-    )
+    logit_weights = torch.zeros(modified_adjacency.shape[0], device=modified_adjacency.device)
     logit_weights[-n_logits:] = graph.logit_probabilities
 
     normalized_matrix = normalize_matrix(modified_adjacency)
     node_influence = compute_influence(normalized_matrix, logit_weights)
-    
+
     token_influence = node_influence[error_end:token_end].sum()
     error_influence = node_influence[error_start:error_end].sum()
     replacement_score = token_influence / (token_influence + error_influence)
     non_error_fractions = 1 - normalized_matrix[:, error_start:error_end].sum(dim=-1)
-    
-    output_influence = node_influence + logit_weights    
+
+    output_influence = node_influence + logit_weights
     completeness_score = (non_error_fractions * output_influence).sum() / output_influence.sum()
 
     return replacement_score.item(), completeness_score.item()
