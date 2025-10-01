@@ -342,8 +342,6 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
 def compute_subgraph_scores(
     graph: Graph,
     pinned_features: list[Feature],
-    node_mask: torch.Tensor,
-    edge_mask: torch.Tensor,
 ) -> tuple[float, float]:
     """Compute metrics for evaluating a subgraph by treating pruned features as errors.
 
@@ -352,12 +350,10 @@ def compute_subgraph_scores(
     then computes replacement and completeness scores using the modified adjacency matrix.
 
     Args:
-        graph: The original (unpruned) computation graph containing nodes for features,
-               errors, tokens, and logits, along with their connections.
+        graph: The computation graph (can be original or pruned) containing nodes for
+               features, errors, tokens, and logits, along with their connections.
         pinned_features: List of Features to include in the subgraph. Features not
                         in this list are treated as pruned/errors.
-        node_mask: Boolean tensor from prune_graph indicating which nodes survived pruning.
-        edge_mask: Boolean tensor from prune_graph indicating which edges survived pruning.
 
     Returns:
         tuple[float, float]: A tuple containing:
@@ -396,23 +392,16 @@ def compute_subgraph_scores(
     error_end = error_start + n_tokens * n_layers
     token_end = error_end + n_tokens
 
-    # Start with the original adjacency matrix (before pruning)
+    # Start with the graph's adjacency matrix (which may already be pruned)
     modified_adjacency = graph.adjacency_matrix.clone()
 
-    # For features that survived initial pruning but are NOT in the subgraph,
-    # merge their edges with the corresponding error nodes
+    # For features that are NOT in the subgraph, merge their edges with error nodes
     for feature_idx in range(n_features):
-        # Check if this feature survived the initial pruning
-        if not node_mask[feature_idx]:
-            # Feature was already pruned in initial pruning, skip it
-            # (its contribution is already captured in the error nodes)
-            continue
-
         if subgraph_feature_mask[feature_idx].item():
             # Feature is pinned (included in subgraph), keep it
             pass
         else:
-            # Feature survived initial pruning but is NOT in the subgraph
+            # Feature is active but NOT in the subgraph
             # Merge its edges into the corresponding error node
             layer, pos, _ = graph.active_features[graph.selected_features[feature_idx]]
 
@@ -427,12 +416,6 @@ def compute_subgraph_scores(
             # Zero out the pruned feature's edges (both incoming and outgoing)
             modified_adjacency[feature_idx, :] = 0
             modified_adjacency[:, feature_idx] = 0
-
-    # Now apply the initial pruning to the modified adjacency matrix
-    # (for nodes that didn't survive initial pruning and weren't merged above)
-    modified_adjacency[~node_mask] = 0
-    modified_adjacency[:, ~node_mask] = 0
-    modified_adjacency = modified_adjacency * edge_mask
 
     # Compute scores using the modified adjacency matrix
     logit_weights = torch.zeros(modified_adjacency.shape[0], device=modified_adjacency.device)
