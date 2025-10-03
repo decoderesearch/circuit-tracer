@@ -202,11 +202,13 @@ def test_compute_graph_scores():
     # With mostly feature paths and few error paths, scores should be high
     expected_replacement = 0.9166666865348816
     expected_completeness = 0.9696969985961914
-    
-    assert abs(replacement_score - expected_replacement) / expected_replacement < 0.1, \
+
+    assert abs(replacement_score - expected_replacement) / expected_replacement < 0.1, (
         f"Replacement score {replacement_score} not within 10% of {expected_replacement}"
-    assert abs(completeness_score - expected_completeness) / expected_completeness < 0.1, \
+    )
+    assert abs(completeness_score - expected_completeness) / expected_completeness < 0.1, (
         f"Completeness score {completeness_score} not within 10% of {expected_completeness}"
+    )
 
     # Scores should be between 0 and 1
     assert 0 <= replacement_score <= 1, f"Replacement score {replacement_score} out of range"

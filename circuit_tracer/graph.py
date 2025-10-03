@@ -247,9 +247,7 @@ def prune_graph(
     return PruneResult(node_mask, edge_mask, final_scores)
 
 
-def create_pruned_graph(
-    graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor
-) -> Graph:
+def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor) -> Graph:
     """Create a pruned graph variant that removes pruned feature nodes entirely.
 
     Error/token/logit nodes are retained (with edges
@@ -290,9 +288,7 @@ def create_pruned_graph(
     # activation_values is aligned to active_features, while the first n_features
     # nodes correspond to selected_features in order. So map first, then mask.
     pruned_selected_features = graph.selected_features[kept_feature_mask]
-    pruned_activation_values = graph.activation_values[graph.selected_features][
-        kept_feature_mask
-    ]
+    pruned_activation_values = graph.activation_values[graph.selected_features][kept_feature_mask]
 
     return Graph(
         input_string=graph.input_string,
