@@ -247,8 +247,14 @@ def prune_graph(
     return PruneResult(node_mask, edge_mask, final_scores)
 
 
-def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor) -> Graph:
-    """Create a pruned version of the graph by applying node and edge masks.
+def create_pruned_graph(
+    graph: Graph, node_mask: torch.Tensor, edge_mask: torch.Tensor
+) -> Graph:
+    """Create a pruned graph variant that removes pruned feature nodes entirely.
+
+    Error/token/logit nodes are retained (with edges
+    masked/zeroed as needed) so that downstream utilities relying on their
+    counts and order still work.
 
     Args:
         graph: The original graph
@@ -256,24 +262,38 @@ def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.
         edge_mask: Boolean tensor indicating which edges to keep
 
     Returns:
-        A new Graph object containing only the pruned nodes and edges
-
-    Note:
-        The pruned graph maintains the same structure as the original graph
-        (same dimensions for adjacency matrix, selected_features, etc.) but
-        with removed nodes/edges represented as zeros in the adjacency matrix.
-        This ensures that functions like compute_graph_scores can correctly
-        interpret the graph structure.
+        A new Graph object in which pruned features have been removed from the
+        adjacency matrix and feature metadata, while other node types are kept.
     """
-    # Apply masks to adjacency matrix - this is the ONLY change we make
-    # All removed nodes/edges are represented as zeros
-    pruned_adjacency = graph.adjacency_matrix.clone()
-    pruned_adjacency[~node_mask] = 0
-    pruned_adjacency[:, ~node_mask] = 0
-    pruned_adjacency = pruned_adjacency * edge_mask
 
-    # Keep all other fields unchanged to preserve the graph structure
-    # The pruning is represented entirely by the zeros in the adjacency matrix
+    # Dimensions and boundaries
+    n_tokens = len(graph.input_tokens)
+    n_logits = len(graph.logit_tokens)
+    n_layers = graph.cfg.n_layers
+    n_features = len(graph.selected_features)
+    _ = n_tokens, n_logits, n_layers  # silence linters for unused locals
+
+    # First apply masks, zeroing pruned nodes/edges
+    masked_adjacency = graph.adjacency_matrix.clone()
+    masked_adjacency[~node_mask] = 0
+    masked_adjacency[:, ~node_mask] = 0
+    masked_adjacency = masked_adjacency * edge_mask
+
+    # Only remove feature nodes (first n_features). Keep errors/tokens/logits.
+    kept_feature_mask = node_mask[:n_features]
+    keep_mask = torch.ones_like(node_mask, dtype=torch.bool, device=node_mask.device)
+    keep_mask[:n_features] = kept_feature_mask
+
+    pruned_adjacency = masked_adjacency[keep_mask][:, keep_mask]
+
+    # Update feature metadata to align with removed features
+    # activation_values is aligned to active_features, while the first n_features
+    # nodes correspond to selected_features in order. So map first, then mask.
+    pruned_selected_features = graph.selected_features[kept_feature_mask]
+    pruned_activation_values = graph.activation_values[graph.selected_features][
+        kept_feature_mask
+    ]
+
     return Graph(
         input_string=graph.input_string,
         input_tokens=graph.input_tokens,
@@ -282,8 +302,8 @@ def create_pruned_graph(graph: Graph, node_mask: torch.Tensor, edge_mask: torch.
         cfg=graph.cfg,
         logit_tokens=graph.logit_tokens,
         logit_probabilities=graph.logit_probabilities,
-        selected_features=graph.selected_features,
-        activation_values=graph.activation_values,
+        selected_features=pruned_selected_features,
+        activation_values=pruned_activation_values,
         scan=graph.scan,
     )
 

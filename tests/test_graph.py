@@ -200,8 +200,13 @@ def test_compute_graph_scores():
     replacement_score, completeness_score = compute_graph_scores(test_graph)
 
     # With mostly feature paths and few error paths, scores should be high
-    assert replacement_score > 0.5, f"Expected high replacement score, got {replacement_score}"
-    assert completeness_score > 0.5, f"Expected high completeness score, got {completeness_score}"
+    expected_replacement = 0.9166666865348816
+    expected_completeness = 0.9696969985961914
+    
+    assert abs(replacement_score - expected_replacement) / expected_replacement < 0.1, \
+        f"Replacement score {replacement_score} not within 10% of {expected_replacement}"
+    assert abs(completeness_score - expected_completeness) / expected_completeness < 0.1, \
+        f"Completeness score {completeness_score} not within 10% of {expected_completeness}"
 
     # Scores should be between 0 and 1
     assert 0 <= replacement_score <= 1, f"Replacement score {replacement_score} out of range"
@@ -284,7 +289,6 @@ def test_compute_subgraph_scores():
     replacement_partial, completeness_partial = compute_subgraph_scores(
         test_graph, partial_features
     )
-
     # Scores should be lower when excluding Feature 1
     assert replacement_partial <= replacement_all, (
         "Partial subgraph should have lower or equal replacement score"
@@ -293,3 +297,13 @@ def test_compute_subgraph_scores():
     # Scores should still be in valid range
     assert 0 <= replacement_partial <= 1, f"Replacement score {replacement_partial} out of range"
     assert 0 <= completeness_partial <= 1, f"Completeness score {completeness_partial} out of range"
+
+    # Verify scores are within 10% of expected values
+    expected_replacement = 0.7647058963775635
+    expected_completeness = 0.8974359631538391
+    assert abs(replacement_partial - expected_replacement) / expected_replacement <= 0.1, (
+        f"Replacement score {replacement_partial} not within 10% of {expected_replacement}"
+    )
+    assert abs(completeness_partial - expected_completeness) / expected_completeness <= 0.1, (
+        f"Completeness score {completeness_partial} not within 10% of {expected_completeness}"
+    )
