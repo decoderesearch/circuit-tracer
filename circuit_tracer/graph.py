@@ -7,7 +7,7 @@ from transformer_lens import HookedTransformerConfig
 class Graph:
     input_string: str
     input_tokens: torch.Tensor
-    logit_tokens: torch.Tensor
+    logit_tokens: torch.Tensor | list[str]
     active_features: torch.Tensor
     adjacency_matrix: torch.Tensor
     selected_features: torch.Tensor
@@ -23,7 +23,7 @@ class Graph:
         active_features: torch.Tensor,
         adjacency_matrix: torch.Tensor,
         cfg: HookedTransformerConfig,
-        logit_tokens: torch.Tensor,
+        logit_tokens: torch.Tensor | list[str],
         logit_probabilities: torch.Tensor,
         selected_features: torch.Tensor,
         activation_values: torch.Tensor,

@@ -93,6 +93,7 @@ def attribute(
     prompt: str | torch.Tensor | list[int],
     model: ReplacementModel,
     *,
+    quantity_to_attribute: list[tuple[str, float, torch.Tensor]] | None = None,
     max_n_logits: int = 10,
     desired_logit_prob: float = 0.95,
     batch_size: int = 512,
@@ -106,6 +107,9 @@ def attribute(
     Args:
         prompt: Text, token ids, or tensor - will be tokenized if str.
         model: Frozen ``ReplacementModel``
+        quantity_to_attribute: Custom target nodes for attribution. Each tuple contains
+                               (token_id, probability, vector). If None, automatically
+                               selects top logits based on desired_logit_prob.
         max_n_logits: Max number of logit nodes.
         desired_logit_prob: Keep logits until cumulative prob >= this value.
         batch_size: How many source nodes to process per backward pass.
@@ -137,6 +141,7 @@ def attribute(
         return _run_attribution(
             model=model,
             prompt=prompt,
+            quantity_to_attribute=quantity_to_attribute,
             max_n_logits=max_n_logits,
             desired_logit_prob=desired_logit_prob,
             batch_size=batch_size,
@@ -158,6 +163,7 @@ def attribute(
 def _run_attribution(
     model,
     prompt,
+    quantity_to_attribute,
     max_n_logits,
     desired_logit_prob,
     batch_size,
@@ -201,15 +207,21 @@ def _run_attribution(
     n_layers, n_pos, _ = activation_matrix.shape
     total_active_feats = activation_matrix._nnz()
 
-    logit_idx, logit_p, logit_vecs = compute_salient_logits(
-        ctx.logits[0, -1],
-        model.unembed.W_U,
-        max_n_logits=max_n_logits,
-        desired_logit_prob=desired_logit_prob,
-    )
-    logger.info(
-        f"Selected {len(logit_idx)} logits with cumulative probability {logit_p.sum().item():.4f}"
-    )
+    if quantity_to_attribute is not None:
+        logit_idx, logit_p, logit_vecs = zip(*quantity_to_attribute)
+        logit_p = torch.tensor(logit_p)
+        logit_vecs = torch.stack(logit_vecs)
+    else:
+        logit_idx, logit_p, logit_vecs = compute_salient_logits(
+            ctx.logits[0, -1],
+            model.unembed.W_U,
+            max_n_logits=max_n_logits,
+            desired_logit_prob=desired_logit_prob,
+        )
+        logger.info(
+            f"Selected {len(logit_idx)} logits with cumulative probability \
+                {logit_p.sum().item():.4f}"
+        )
 
     if offload:
         offload_handles += offload_modules([model.unembed, model.embed], offload)
