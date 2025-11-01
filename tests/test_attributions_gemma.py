@@ -142,6 +142,7 @@ def verify_feature_edges(
         )
         new_logits = new_logits.squeeze(0)
 
+        assert new_activation_cache is not None
         new_relevant_activations = new_activation_cache[
             active_features[:, 0], active_features[:, 1], active_features[:, 2]
         ]

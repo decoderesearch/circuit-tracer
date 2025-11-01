@@ -123,6 +123,8 @@ class ReplacementModel(HookedTransformer):
         transcoder_set: str,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
+        lazy_encoder: bool = False,
+        lazy_decoder: bool = True,
         **kwargs,
     ) -> "ReplacementModel":
         """Create a ReplacementModel from model name and transcoder config
@@ -130,6 +132,15 @@ class ReplacementModel(HookedTransformer):
         Args:
             model_name (str): the name of the pretrained HookedTransformer
             transcoder_set (str): Either a predefined transcoder set name, or a config file
+            device (torch.device | None): The device to load the model and transcoders on.
+                If None, uses the default device. Defaults to None.
+            dtype (torch.dtype): The dtype to use for the model and transcoders.
+                Defaults to torch.float32.
+            lazy_encoder (bool): Whether to lazily load encoder weights. If True, encoder
+                weights are not loaded into memory until needed. Defaults to False.
+            lazy_decoder (bool): Whether to lazily load decoder weights. If True, decoder
+                weights are not loaded into memory until needed. Defaults to True.
+            **kwargs: Additional keyword arguments passed to HookedTransformer.from_pretrained
 
         Returns:
             ReplacementModel: The loaded ReplacementModel
@@ -137,7 +148,11 @@ class ReplacementModel(HookedTransformer):
         if device is None:
             device = get_default_device()
 
-        transcoders, _ = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)
+        transcoders, _ = load_transcoder_from_hub(transcoder_set, 
+                                                  device=device, 
+                                                  dtype=dtype, 
+                                                  lazy_encoder=lazy_encoder, 
+                                                  lazy_decoder=lazy_decoder)
 
         return cls.from_pretrained_and_transcoders(
             model_name,
@@ -530,6 +545,8 @@ class ReplacementModel(HookedTransformer):
         apply_activation_function: bool = True,
         sparse: bool = False,
         using_past_kv_cache: bool = False,
+        return_activations: bool = True,
+
     ):
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, allowing all effects to propagate (optionally allowing its effects to
@@ -553,6 +570,10 @@ class ReplacementModel(HookedTransformer):
             using_past_kv_cache (bool): whether we are generating with past_kv_cache, meaning that
                 n_pos is 1, and we must append onto the existing logit / activation cache if the
                 hooks are run multiple times. Defaults to False
+            return_activations (bool): Whether to compute and return feature activations. If False,
+                activation computation is skipped for layers not being intervened on (when
+                constrained_layers is not set), saving time. Activations are not returned.
+                Defaults to True.
         """
 
         interventions_by_layer = defaultdict(list)
@@ -587,6 +608,15 @@ class ReplacementModel(HookedTransformer):
             sparse=sparse,
             append=using_past_kv_cache,
         )
+
+        if not return_activations:
+            new_activation_hooks = []
+            if not constrained_layers:
+                for loc, hook in activation_hooks:
+                    layer = int(loc.split('.')[1])
+                    if layer in interventions_by_layer:
+                        new_activation_hooks.append((loc, hook))
+            activation_hooks = new_activation_hooks
 
         def calculate_delta_hook(activations, hook, layer: int, layer_interventions):
             if constrained_layers:
@@ -681,7 +711,8 @@ class ReplacementModel(HookedTransformer):
         freeze_attention: bool = True,
         apply_activation_function: bool = True,
         sparse: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return_activations: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and returns the logits and feature activations. If freeze_attention or
         constrained_layers is True, attention patterns will be frozen, along with MLPs and
@@ -705,6 +736,10 @@ class ReplacementModel(HookedTransformer):
                 feature values.
             sparse (bool): whether to sparsify the activations in the returned cache. Setting
                 this to True will take up less memory, at the expense of slower interventions.
+            return_activations (bool): Whether to compute and return feature activations. If False,
+                activation computation is skipped for layers not being intervened on (when
+                constrained_layers is not set), saving time. Returns None for activations.
+                Defaults to True.
         """
 
         hooks, _, activation_cache = self._get_feature_intervention_hooks(
@@ -714,12 +749,16 @@ class ReplacementModel(HookedTransformer):
             freeze_attention=freeze_attention,
             apply_activation_function=apply_activation_function,
             sparse=sparse,
+            return_activations=return_activations,
         )
 
         with self.hooks(hooks):  # type: ignore
             logits = self(inputs)
 
-        activation_cache = torch.stack(activation_cache)
+        if return_activations:
+            activation_cache = torch.stack(activation_cache)
+        else:
+            activation_cache = None
 
         return logits, activation_cache
 
@@ -750,8 +789,9 @@ class ReplacementModel(HookedTransformer):
         freeze_attention: bool = True,
         apply_activation_function: bool = True,
         sparse: bool = False,
+        return_activations: bool = True,
         **kwargs,
-    ) -> tuple[str, torch.Tensor, torch.Tensor]:
+    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and generates a continuation, along with the logits and activations at
         each generation position.
@@ -785,6 +825,10 @@ class ReplacementModel(HookedTransformer):
                 feature values.
             sparse (bool): whether to sparsify the activations in the returned cache. Setting
                 this to True will take up less memory, at the expense of slower interventions.
+            return_activations (bool): Whether to compute and return feature activations. If False,
+                activation computation is skipped for layers not being intervened on (when
+                constrained_layers is not set), saving time. Returns None for activations.
+                Defaults to True.
         """
 
         feature_intervention_hook_output = self._get_feature_intervention_hooks(
@@ -794,6 +838,7 @@ class ReplacementModel(HookedTransformer):
             freeze_attention=freeze_attention,
             apply_activation_function=apply_activation_function,
             sparse=sparse,
+            return_activations=return_activations,
         )
 
         hooks, logit_cache, activation_cache = feature_intervention_hook_output
@@ -816,6 +861,7 @@ class ReplacementModel(HookedTransformer):
                 apply_activation_function=apply_activation_function,
                 sparse=sparse,
                 using_past_kv_cache=True,
+                return_activations=return_activations,
             )
         )
 
@@ -838,10 +884,21 @@ class ReplacementModel(HookedTransformer):
             [torch.cat(acts, dim=0) for acts in open_ended_activations],  # type:ignore
             dim=0,
         )
-        activation_cache = torch.stack(activation_cache)
-        activations = torch.cat((activation_cache, open_ended_activations), dim=1)
-        if sparse:
-            activations = activations.coalesce()
+        if return_activations:
+            activation_cache = torch.stack(activation_cache)
+            if open_ended_activations and any(acts for acts in open_ended_activations):
+                open_ended_activations = torch.stack(
+                    [torch.cat(acts, dim=0) for acts in open_ended_activations],  # type:ignore
+                    dim=0,
+                )
+                
+                activations = torch.cat((activation_cache, open_ended_activations), dim=1)
+            else:
+                activations = activation_cache
+            if sparse:
+                activations = activations.coalesce()
+        else:
+            activations = None
 
         return generation, logits, activations
 
