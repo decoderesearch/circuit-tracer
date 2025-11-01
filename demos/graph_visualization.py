@@ -1,6 +1,5 @@
 # %%
 from collections import namedtuple
-from typing import List, Optional, Tuple, Dict
 import math
 import html
 
@@ -13,10 +12,10 @@ Feature = namedtuple("Feature", ["layer", "pos", "feature_idx"])
 
 class InterventionGraph:
     prompt: str
-    ordered_nodes: List["Supernode"]
-    nodes: Dict[str, "Supernode"]
+    ordered_nodes: list["Supernode"]
+    nodes: dict[str, "Supernode"]
 
-    def __init__(self, ordered_nodes: List["Supernode"], prompt: str):
+    def __init__(self, ordered_nodes: list["Supernode"], prompt: str):
         self.ordered_nodes = ordered_nodes
         self.prompt = prompt
         self.nodes = {}
@@ -47,17 +46,17 @@ class Supernode:
     name: str
     activation: float | None
     default_activations: torch.Tensor | None
-    children: List["Supernode"]
+    children: list["Supernode"]
     intervention: None
-    replacement_node: Optional["Supernode"]
+    replacement_node: "Supernode | None"
 
     def __init__(
         self,
         name: str,
-        features: List[Feature],
-        children: List["Supernode"] = [],
-        intervention: Optional[str] = None,
-        replacement_node: Optional["Supernode"] = None,
+        features: list[Feature],
+        children: list["Supernode"] = [],
+        intervention: str | None = None,
+        replacement_node: "Supernode | None" = None,
     ):
         self.name = name
         self.features = features
@@ -71,7 +70,7 @@ class Supernode:
         return f"Node(name={self.name}, activation={self.activation}, children={self.children}, intervention={self.intervention}, replacement_node={self.replacement_node})"
 
 
-def calculate_node_positions(nodes: List[List["Supernode"]]):
+def calculate_node_positions(nodes: list[list["Supernode"]]):
     """Calculate positions for all nodes including replacements"""
     container_width = 600
     container_height = 250
@@ -278,7 +277,7 @@ def create_nodes_svg(node_data):
     return "\n".join(svg_parts)
 
 
-def build_connections_data(nodes: List[List["Supernode"]]):
+def build_connections_data(nodes: list[list["Supernode"]]):
     """Build connection data from node relationships"""
     connections = []
 
@@ -345,7 +344,7 @@ def wrap_text_for_svg(text, max_width=80):
 
 
 def create_graph_visualization(
-    intervention_graph: InterventionGraph, top_outputs: List[Tuple[str, float]]
+    intervention_graph: InterventionGraph, top_outputs: list[tuple[str, float]]
 ):
     """
     Creates an SVG-based graph visualization that renders properly on GitHub and other platforms.
