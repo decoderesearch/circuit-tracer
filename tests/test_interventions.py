@@ -1,6 +1,5 @@
 import pytest
 import torch
-
 from circuit_tracer import ReplacementModel
 
 

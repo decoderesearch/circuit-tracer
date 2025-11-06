@@ -4,13 +4,13 @@ import numpy as np
 import pytest
 import torch
 import torch.nn as nn
-from tqdm import tqdm
-from transformer_lens import HookedTransformerConfig
-
 from circuit_tracer import Graph, ReplacementModel, attribute
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.utils import get_default_device
+from tqdm import tqdm
+
+from transformer_lens.config import TransformerBridgeConfig
 
 
 def verify_token_and_error_edges(
@@ -175,7 +175,7 @@ def verify_feature_edges(
         verify_intervention(expected_effects, layer, pos, feature_idx, new_activation)
 
 
-def load_dummy_gemma_model(cfg: HookedTransformerConfig):
+def load_dummy_gemma_model(cfg: TransformerBridgeConfig):
     transcoders = {
         layer_idx: SingleLayerTranscoder(
             cfg.d_model, cfg.d_model * 4, JumpReLU(torch.tensor(0.0), 0.1), layer_idx
@@ -273,7 +273,7 @@ def verify_small_gemma_model(s: torch.Tensor):
         "NTK_by_parts_high_freq_factor": 4.0,
         "NTK_by_parts_factor": 8.0,
     }
-    cfg = HookedTransformerConfig.from_dict(gemma_small_cfg)
+    cfg = TransformerBridgeConfig.from_dict(gemma_small_cfg)
     model = load_dummy_gemma_model(cfg)
     graph = attribute(s, model)
 
@@ -367,7 +367,7 @@ def verify_large_gemma_model(s: torch.Tensor):
         "NTK_by_parts_high_freq_factor": 4.0,
         "NTK_by_parts_factor": 8.0,
     }
-    cfg = HookedTransformerConfig.from_dict(gemma_large_cfg)
+    cfg = TransformerBridgeConfig.from_dict(gemma_large_cfg)
     model = load_dummy_gemma_model(cfg)
     graph = attribute(s, model)
 

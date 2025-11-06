@@ -1,7 +1,8 @@
 from typing import NamedTuple
 
 import torch
-from transformer_lens import HookedTransformerConfig
+
+from transformer_lens.config import TransformerBridgeConfig
 
 
 class Graph:
@@ -13,7 +14,7 @@ class Graph:
     selected_features: torch.Tensor
     activation_values: torch.Tensor
     logit_probabilities: torch.Tensor
-    cfg: HookedTransformerConfig
+    cfg: TransformerBridgeConfig
     scan: str | list[str] | None
 
     def __init__(
@@ -22,7 +23,7 @@ class Graph:
         input_tokens: torch.Tensor,
         active_features: torch.Tensor,
         adjacency_matrix: torch.Tensor,
-        cfg: HookedTransformerConfig,
+        cfg: TransformerBridgeConfig,
         logit_tokens: torch.Tensor,
         logit_probabilities: torch.Tensor,
         selected_features: torch.Tensor,
@@ -48,7 +49,7 @@ class Graph:
                 model.cfg.n_layers * len(input_tokens) error nodes, len(input_tokens) embed
                 nodes, len(logit_tokens) logit nodes. The rows represent target nodes, while
                 columns represent source nodes.
-            cfg (HookedTransformerConfig): The cfg of the model.
+            cfg (TransformerBridgeConfig): The cfg of the model.
             logit_tokens (List[str]): The logit tokens attributed from.
             logit_probabilities (torch.Tensor): The probabilities of each logit token, given
                 the input string.

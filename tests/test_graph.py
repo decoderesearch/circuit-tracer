@@ -1,9 +1,9 @@
 import numpy as np
 import torch
-from transformer_lens import HookedTransformerConfig
-
 from circuit_tracer.graph import Graph, compute_edge_influence, compute_node_influence
 from circuit_tracer.utils import get_default_device
+
+from transformer_lens.config import TransformerBridgeConfig
 
 
 def test_small_graph():
@@ -106,7 +106,7 @@ def test_small_graph():
         "NTK_by_parts_high_freq_factor": 4.0,
         "NTK_by_parts_factor": 8.0,
     }
-    cfg = HookedTransformerConfig.from_dict(gemma_small_cfg)
+    cfg = TransformerBridgeConfig.from_dict(gemma_small_cfg)
     test_graph = Graph(
         input_string="ab",
         input_tokens=torch.tensor([0, 1]),

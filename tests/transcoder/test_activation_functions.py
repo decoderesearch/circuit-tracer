@@ -1,5 +1,4 @@
 import torch
-
 from circuit_tracer.transcoder.activation_functions import JumpReLU, TopK
 
 

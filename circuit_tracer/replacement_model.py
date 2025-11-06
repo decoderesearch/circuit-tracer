@@ -1,21 +1,22 @@
 import warnings
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from functools import partial
-from collections.abc import Callable, Sequence
 
 import torch
 import torch.nn.functional as F
-from torch import nn
-from transformer_lens import HookedTransformer, HookedTransformerConfig
-from transformer_lens.hook_points import HookPoint
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
-
 from circuit_tracer.attribution.context import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
+from torch import nn
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+from transformer_lens.config import TransformerBridgeConfig
+from transformer_lens.hook_points import HookPoint
+from transformer_lens.model_bridge import TransformerBridge
 
 # Type definition for an intervention tuple (layer, position, feature_idx, value)
 Intervention = tuple[
@@ -61,7 +62,7 @@ class ReplacementUnembed(nn.Module):
         return self.hook_post(x)
 
 
-class ReplacementModel(HookedTransformer):
+class ReplacementModel(TransformerBridge):
     transcoders: TranscoderSet | CrossLayerTranscoder  # Support both types
     feature_input_hook: str
     feature_output_hook: str
@@ -72,14 +73,14 @@ class ReplacementModel(HookedTransformer):
     @classmethod
     def from_config(
         cls,
-        config: HookedTransformerConfig,
+        config: TransformerBridgeConfig,
         transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
         **kwargs,
     ) -> "ReplacementModel":
-        """Create a ReplacementModel from a given HookedTransformerConfig and TranscoderSet
+        """Create a ReplacementModel from a given TransformerBridgeConfig and TranscoderSet
 
         Args:
-            config (HookedTransformerConfig): the config of the HookedTransformer
+            config (TransformerBridgeConfig): the model configuration
             transcoders (TranscoderSet): The transcoder set with configuration
 
         Returns:
@@ -96,21 +97,23 @@ class ReplacementModel(HookedTransformer):
         transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
         **kwargs,
     ) -> "ReplacementModel":
-        """Create a ReplacementModel from the name of HookedTransformer and TranscoderSet
+        """Create a ReplacementModel from the name of TransformerBridge and TranscoderSet
 
         Args:
-            model_name (str): the name of the pretrained HookedTransformer
+            model_name (str): the name of the pretrained model
             transcoders (TranscoderSet): The transcoder set with configuration
 
         Returns:
             ReplacementModel: The loaded ReplacementModel
         """
-        model = super().from_pretrained(
+        model = TransformerBridge.boot_transformers(
             model_name,
+            **kwargs,
+        )
+        model.enable_compatibility_mode(
             fold_ln=False,
             center_writing_weights=False,
             center_unembed=False,
-            **kwargs,
         )
 
         model._configure_replacement_model(transcoders)
@@ -130,7 +133,7 @@ class ReplacementModel(HookedTransformer):
         """Create a ReplacementModel from model name and transcoder config
 
         Args:
-            model_name (str): the name of the pretrained HookedTransformer
+            model_name (str): the name of the pretrained model
             transcoder_set (str): Either a predefined transcoder set name, or a config file
             device (torch.device | None): The device to load the model and transcoders on.
                 If None, uses the default device. Defaults to None.
@@ -140,7 +143,7 @@ class ReplacementModel(HookedTransformer):
                 weights are not loaded into memory until needed. Defaults to False.
             lazy_decoder (bool): Whether to lazily load decoder weights. If True, decoder
                 weights are not loaded into memory until needed. Defaults to True.
-            **kwargs: Additional keyword arguments passed to HookedTransformer.from_pretrained
+            **kwargs: Additional keyword arguments passed to TransformerBridge.boot_transformers
 
         Returns:
             ReplacementModel: The loaded ReplacementModel
@@ -796,10 +799,10 @@ class ReplacementModel(HookedTransformer):
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and generates a continuation, along with the logits and activations at
         each generation position.
-        This function accepts all kwargs valid for HookedTransformer.generate(). Note that
+        This function accepts all kwargs valid for TransformerBridge.generate(). Note that
         freeze_attention applies only to the first token generated.
 
-        This function accepts all kwargs valid for HookedTransformer.generate(). Note that
+        This function accepts all kwargs valid for TransformerBridge.generate(). Note that
         direct_effects and freeze_attention apply only to the first token generated.
 
         Note that if kv_cache is True (default), generation will be faster, as the model
@@ -844,26 +847,28 @@ class ReplacementModel(HookedTransformer):
 
         hooks, logit_cache, activation_cache = feature_intervention_hook_output
 
-        assert kwargs.get("use_past_kv_cache", True), (
-            "Generation is only possible with use_past_kv_cache=True"
-        )
+        assert kwargs.get(
+            "use_past_kv_cache", True
+        ), "Generation is only possible with use_past_kv_cache=True"
         # Next, convert any open-ended interventions so they target position `0` (the
         # only token present during the incremental forward passes performed by
         # `generate`) and build the corresponding hooks.
         open_ended_interventions = self._convert_open_ended_interventions(interventions)
 
         # get new hooks that will target pos 0 / append logits / acts to the cache (not overwrite)
-        open_ended_hooks, open_ended_logits, open_ended_activations = (
-            self._get_feature_intervention_hooks(
-                inputs,
-                open_ended_interventions,
-                constrained_layers=None,
-                freeze_attention=False,
-                apply_activation_function=apply_activation_function,
-                sparse=sparse,
-                using_past_kv_cache=True,
-                return_activations=return_activations,
-            )
+        (
+            open_ended_hooks,
+            open_ended_logits,
+            open_ended_activations,
+        ) = self._get_feature_intervention_hooks(
+            inputs,
+            open_ended_interventions,
+            constrained_layers=None,
+            freeze_attention=False,
+            apply_activation_function=apply_activation_function,
+            sparse=sparse,
+            using_past_kv_cache=True,
+            return_activations=return_activations,
         )
 
         # at the end of the model, clear original hooks and add open-ended hooks

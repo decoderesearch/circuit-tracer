@@ -15,7 +15,7 @@ dependencies = [
     "tokenizers>=0.21.0",
     "torch>=2.0.0",
     "tqdm>=4.60.0",
-    "transformer-lens>=v2.16.0",
+    "transformer-lens @ git+https://github.com/TransformerLensOrg/TransformerLens.git@dev-3.x-folding",
     "transformers>=4.50.0",
 ]
 
