@@ -1,7 +1,9 @@
 import numpy as np
+import pytest
 import torch
 from transformer_lens import HookedTransformerConfig
 
+from circuit_tracer.attribution.targets import LogitTarget
 from circuit_tracer.graph import Graph, compute_edge_influence, compute_node_influence
 from circuit_tracer.utils import get_default_device
 
@@ -113,7 +115,7 @@ def test_small_graph():
         active_features=torch.tensor([1, 2, 3, 4, 5]),
         adjacency_matrix=adjacency_matrix,
         cfg=cfg,
-        logit_tokens=torch.tensor([0]),
+        logit_targets=[LogitTarget(token_str="tok_0", vocab_idx=0)],
         logit_probabilities=torch.tensor([1.0]),
         selected_features=torch.tensor([1, 2, 3, 4, 5]),
         activation_values=torch.tensor([1, 2, 3, 4, 5]) * 2,
@@ -131,3 +133,156 @@ def test_small_graph():
 
     edge_influence_on_logits = compute_edge_influence(pruned_adjacency_matrix, logit_weights)
     assert torch.allclose(edge_influence_on_logits, post_pruning_edge_matrix)
+
+
+def test_graph_with_tensor_logit_targets():
+    """Test that Graph accepts legacy tensor format for logit_targets."""
+    cfg = HookedTransformerConfig.from_dict(
+        {
+            "n_layers": 2,
+            "d_model": 8,
+            "n_ctx": 32,
+            "d_head": 4,
+            "n_heads": 2,
+            "d_mlp": 16,
+            "act_fn": "gelu",
+            "d_vocab": 50257,  # GPT-2 vocab size
+            "model_name": "test-model",
+            "device": get_default_device(),
+        }
+    )
+
+    adjacency_matrix = torch.zeros([10, 10])
+    adjacency_matrix[9, 5] = 1.0
+
+    # Test with tensor format - token_str will be empty
+    graph_tensor = Graph(
+        input_string="test",
+        input_tokens=torch.tensor([1, 2, 3]),
+        active_features=torch.tensor([[0, 0, 5]]),
+        adjacency_matrix=adjacency_matrix,
+        cfg=cfg,
+        logit_targets=torch.tensor([262, 290, 314]),  # Tensor format
+        logit_probabilities=torch.tensor([0.5, 0.3, 0.2]),
+        selected_features=torch.tensor([0]),
+        activation_values=torch.tensor([1.5]),
+    )
+
+    # Verify conversion to LogitTarget list with empty token strings
+    assert len(graph_tensor.logit_targets) == 3
+    assert graph_tensor.logit_targets[0].vocab_idx == 262
+    assert graph_tensor.logit_targets[1].vocab_idx == 290
+    assert graph_tensor.logit_targets[2].vocab_idx == 314
+    # Token strings are empty when constructed from tensor
+    assert graph_tensor.logit_targets[0].token_str == ""
+    assert graph_tensor.logit_targets[1].token_str == ""
+    assert graph_tensor.logit_targets[2].token_str == ""
+
+    # Verify properties work
+    assert graph_tensor.vocab_indices == [262, 290, 314]
+    assert not graph_tensor.has_virtual_indices
+    assert torch.equal(graph_tensor.logit_token_ids, torch.tensor([262, 290, 314]))
+
+    # Test with LogitTarget list format (current)
+    graph_list = Graph(
+        input_string="test",
+        input_tokens=torch.tensor([1, 2, 3]),
+        active_features=torch.tensor([[0, 0, 5]]),
+        adjacency_matrix=adjacency_matrix,
+        cfg=cfg,
+        logit_targets=[
+            LogitTarget(token_str=" the", vocab_idx=262),
+            LogitTarget(token_str=" a", vocab_idx=290),
+            LogitTarget(token_str=" and", vocab_idx=314),
+        ],
+        logit_probabilities=torch.tensor([0.5, 0.3, 0.2]),
+        selected_features=torch.tensor([0]),
+        activation_values=torch.tensor([1.5]),
+    )
+
+    # Verify both formats produce same vocab_indices
+    assert graph_tensor.vocab_indices == graph_list.vocab_indices
+    assert graph_tensor.vocab_size == graph_list.vocab_size
+
+
+@pytest.mark.parametrize(
+    "logit_targets_input,expected_token_strs",
+    [
+        pytest.param(
+            torch.tensor([262, 290, 314]),
+            ["", "", ""],
+            id="tensor_format",
+        ),
+        pytest.param(
+            [
+                LogitTarget(token_str=" the", vocab_idx=262),
+                LogitTarget(token_str=" a", vocab_idx=290),
+                LogitTarget(token_str=" and", vocab_idx=314),
+            ],
+            [" the", " a", " and"],
+            id="logit_target_format",
+        ),
+    ],
+)
+def test_graph_serialization_with_logit_targets(logit_targets_input, expected_token_strs):
+    """Test that Graph serialization works with both tensor and LogitTarget formats."""
+    import tempfile
+    import os
+
+    cfg = HookedTransformerConfig.from_dict(
+        {
+            "n_layers": 2,
+            "d_model": 8,
+            "n_ctx": 32,
+            "d_head": 4,
+            "n_heads": 2,
+            "d_mlp": 16,
+            "act_fn": "gelu",
+            "d_vocab": 50257,
+            "model_name": "test-model",
+            "device": get_default_device(),
+        }
+    )
+
+    adjacency_matrix = torch.zeros([10, 10])
+    adjacency_matrix[9, 5] = 1.0
+
+    # Create graph with parameterized format
+    original_graph = Graph(
+        input_string="test",
+        input_tokens=torch.tensor([1, 2, 3]),
+        active_features=torch.tensor([[0, 0, 5]]),
+        adjacency_matrix=adjacency_matrix,
+        cfg=cfg,
+        logit_targets=logit_targets_input,
+        logit_probabilities=torch.tensor([0.5, 0.3, 0.2]),
+        selected_features=torch.tensor([0]),
+        activation_values=torch.tensor([1.5]),
+        vocab_size=50257,
+    )
+
+    # Save and load
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as tmp:
+        tmp_path = tmp.name
+
+    try:
+        original_graph.to_pt(tmp_path)
+        loaded_graph = Graph.from_pt(tmp_path)
+
+        # Verify loaded graph has correct data
+        assert loaded_graph.vocab_indices == [262, 290, 314]
+        assert loaded_graph.vocab_size == 50257
+        assert not loaded_graph.has_virtual_indices
+        assert torch.equal(loaded_graph.logit_token_ids, torch.tensor([262, 290, 314]))
+        assert torch.equal(loaded_graph.logit_probabilities, torch.tensor([0.5, 0.3, 0.2]))
+
+        # Verify LogitTarget objects were preserved with expected token strings
+        assert len(loaded_graph.logit_targets) == 3
+        assert all(isinstance(lt, LogitTarget) for lt in loaded_graph.logit_targets)
+        assert loaded_graph.logit_targets[0].token_str == expected_token_strs[0]
+        assert loaded_graph.logit_targets[1].token_str == expected_token_strs[1]
+        assert loaded_graph.logit_targets[2].token_str == expected_token_strs[2]
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)

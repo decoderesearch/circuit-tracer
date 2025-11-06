@@ -32,7 +32,6 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
     layers = graph.cfg.n_layers
     error_end_idx = n_features + graph.n_pos * layers
     token_end_idx = error_end_idx + len(graph.input_tokens)
-    logit_node_counter = 0
 
     for node_idx in node_mask.nonzero().squeeze().tolist():
         if node_idx in range(n_features):
@@ -55,19 +54,15 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
         elif node_idx in range(token_end_idx, len(cumulative_scores)):
             pos = node_idx - token_end_idx
 
-            logit_token = graph.logit_tokens[pos]
-            if isinstance(logit_token, torch.Tensor):
-                vocab_idx = logit_token
-                token = tokenizer.decode(logit_token)
-            else:
-                token = logit_token
-                vocab_idx = logit_node_counter
-                logit_node_counter += 1
+            # vocab_idx can be either a valid token_id (< vocab_size) or a virtual
+            # index (>= vocab_size) for arbitrary strings/functions thereof. The virtual indices
+            # encode the position in the list as: vocab_size + position.
+            token, vocab_idx = graph.logit_targets[pos]
 
             nodes[node_idx] = Node.logit_node(
                 pos=graph.n_pos - 1,
                 vocab_idx=vocab_idx,
-                token=tokenizer.decode(token),
+                token=token,
                 target_logit=pos == 0,
                 token_prob=graph.logit_probabilities[pos].item(),
                 num_layers=layers,

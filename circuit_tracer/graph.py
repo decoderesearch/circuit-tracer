@@ -1,20 +1,27 @@
+"""Graph data structures for attribution results."""
+
 from typing import NamedTuple
+import warnings
 
 import torch
 from transformer_lens import HookedTransformerConfig
+
+from circuit_tracer.attribution.targets import AttributionTargets, LogitTarget
 
 
 class Graph:
     input_string: str
     input_tokens: torch.Tensor
-    logit_tokens: torch.Tensor | list[str]
+    logit_targets: list[LogitTarget]
     active_features: torch.Tensor
     adjacency_matrix: torch.Tensor
     selected_features: torch.Tensor
     activation_values: torch.Tensor
     logit_probabilities: torch.Tensor
+    vocab_size: int
     cfg: HookedTransformerConfig
     scan: str | list[str] | None
+    n_pos: int
 
     def __init__(
         self,
@@ -23,11 +30,13 @@ class Graph:
         active_features: torch.Tensor,
         adjacency_matrix: torch.Tensor,
         cfg: HookedTransformerConfig,
-        logit_tokens: torch.Tensor | list[str],
-        logit_probabilities: torch.Tensor,
         selected_features: torch.Tensor,
         activation_values: torch.Tensor,
         scan: str | list[str] | None = None,
+        attribution_targets: AttributionTargets | None = None,
+        logit_targets: list[LogitTarget] | torch.Tensor | None = None,
+        logit_probabilities: torch.Tensor | None = None,
+        vocab_size: int | None = None,
     ):
         """
         A graph object containing the adjacency matrix describing the direct effect of each
@@ -39,30 +48,62 @@ class Graph:
 
         Args:
             input_string (str): The input string attributed.
-            input_tokens (List[str]): The input tokens attributed.
+            input_tokens (torch.Tensor): The input tokens attributed.
             active_features (torch.Tensor): A tensor of shape (n_active_features, 3)
                 containing the indices (layer, pos, feature_idx) of the non-zero features
                 of the model on the given input string.
             adjacency_matrix (torch.Tensor): The adjacency matrix. Organized as
                 [active_features, error_nodes, embed_nodes, logit_nodes], where there are
                 model.cfg.n_layers * len(input_tokens) error nodes, len(input_tokens) embed
-                nodes, len(logit_tokens) logit nodes. The rows represent target nodes, while
+                nodes, len(logit_targets) logit nodes. The rows represent target nodes, while
                 columns represent source nodes.
             cfg (HookedTransformerConfig): The cfg of the model.
-            logit_tokens (List[str]): The logit tokens attributed from.
-            logit_probabilities (torch.Tensor): The probabilities of each logit token, given
-                the input string.
+            selected_features (torch.Tensor): Indices into active_features for selected nodes.
+            activation_values (torch.Tensor): Activation values for selected features.
             scan (Optional[Union[str,List[str]]], optional): The identifier of the
                 transcoders used in the graph. Without a scan, the graph cannot be uploaded
                 (since we won't know what transcoders were used). Defaults to None
+            attribution_targets (Optional[AttributionTargets]): Attribution targets container.
+                When provided, logit_targets, logit_probabilities, and vocab_size are
+                extracted from it.
+            logit_targets (Optional[Union[List[LogitTarget], torch.Tensor]]): Either a list
+                of LogitTarget records or a tensor of token_ids. When using tensor
+                format, token_str fields will be empty strings.
+            logit_probabilities (Optional[torch.Tensor]): Logit probabilities. Required if
+                attribution_targets is not provided.
+            vocab_size (Optional[int]): Vocabulary size for determining virtual indices.
+                If not provided, defaults to cfg.d_vocab.
         """
+        if attribution_targets is not None:
+            if logit_targets is not None or logit_probabilities is not None:
+                raise ValueError(
+                    "Cannot specify both attribution_targets and "
+                    "(logit_targets, logit_probabilities). Use one or the other."
+                )
+            self.logit_targets = attribution_targets.logit_targets
+            self.logit_probabilities = attribution_targets.logit_probabilities
+            self.vocab_size = attribution_targets.vocab_size
+        elif logit_targets is not None and logit_probabilities is not None:
+            if isinstance(logit_targets, torch.Tensor):
+                # When reconstructing from tensor, token_str is not available
+                self.logit_targets = [
+                    LogitTarget(token_str="", vocab_idx=int(idx)) for idx in logit_targets.tolist()
+                ]
+            else:
+                self.logit_targets = logit_targets
+            self.logit_probabilities = logit_probabilities
+            self.vocab_size = vocab_size if vocab_size is not None else cfg.d_vocab
+        else:
+            raise ValueError(
+                "Must provide either attribution_targets or both logit_targets and "
+                "logit_probabilities"
+            )
+
         self.input_string = input_string
         self.adjacency_matrix = adjacency_matrix
         self.cfg = cfg
         self.n_pos = len(input_tokens)
         self.active_features = active_features
-        self.logit_tokens = logit_tokens
-        self.logit_probabilities = logit_probabilities
         self.input_tokens = input_tokens
         if scan is None:
             print("Graph loaded without scan to identify it. Uploading will not be possible.")
@@ -78,8 +119,61 @@ class Graph:
         """
         self.adjacency_matrix = self.adjacency_matrix.to(device)
         self.active_features = self.active_features.to(device)
-        self.logit_tokens = self.logit_tokens.to(device)
+        # logit_targets is list[LogitTarget], no device transfer needed
         self.logit_probabilities = self.logit_probabilities.to(device)
+
+    @property
+    def vocab_indices(self) -> list[int]:
+        """All vocabulary indices including virtual indices (>= vocab_size).
+
+        Provides the same interface as AttributionTargets.vocab_indices.
+        """
+        return [target.vocab_idx for target in self.logit_targets]
+
+    @property
+    def has_virtual_indices(self) -> bool:
+        """Check if any targets use virtual indices (OOV tokens).
+
+        Virtual indices (vocab_idx >= vocab_size) are a technique used to represent
+        arbitrary string tokens (or functions thereof) not in the tokenizer's vocabulary.
+        """
+        return any(t.vocab_idx >= self.vocab_size for t in self.logit_targets)
+
+    @property
+    def logit_token_ids(self) -> torch.Tensor:
+        """Tensor of logit target token IDs (< vocab_size only).
+
+        Returns token IDs for logit targets on the same device as other graph tensors.
+        Provides the same interface as AttributionTargets.token_ids.
+
+        Raises:
+            ValueError: If any targets have virtual indices
+        """
+        if self.has_virtual_indices:
+            raise ValueError(
+                "Cannot create logit_token_ids tensor: some targets use virtual indices. "
+                "Use vocab_indices to get all indices including virtual ones."
+            )
+        return torch.tensor(
+            self.vocab_indices, dtype=torch.long, device=self.logit_probabilities.device
+        )
+
+    @property
+    def logit_tokens(self) -> torch.Tensor:
+        """Get logit target token IDs tensor (legacy compatibility).
+
+        .. deprecated::
+            Use `logit_token_ids` property instead. This is an alias for backward compatibility.
+
+        Raises:
+            ValueError: If any targets have virtual indices
+        """
+        warnings.warn(
+            "logit_tokens property is deprecated. Use logit_token_ids property instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.logit_token_ids
 
     def to_pt(self, path: str):
         """Saves the graph at the given path
@@ -92,8 +186,9 @@ class Graph:
             "adjacency_matrix": self.adjacency_matrix,
             "cfg": self.cfg,
             "active_features": self.active_features,
-            "logit_tokens": self.logit_tokens,
+            "logit_targets": self.logit_targets,
             "logit_probabilities": self.logit_probabilities,
+            "vocab_size": self.vocab_size,
             "input_tokens": self.input_tokens,
             "selected_features": self.selected_features,
             "activation_values": self.activation_values,
@@ -194,7 +289,7 @@ def prune_graph(
 
     # Extract dimensions
     n_tokens = len(graph.input_tokens)
-    n_logits = len(graph.logit_tokens)
+    n_logits = len(graph.logit_targets)
     n_features = len(graph.selected_features)
 
     logit_weights = torch.zeros(
@@ -271,7 +366,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
         reconstruction where all computation flows through interpretable features. Lower
         scores indicate more reliance on error nodes, suggesting incomplete feature coverage.
     """
-    n_logits = len(graph.logit_tokens)
+    n_logits = len(graph.logit_targets)
     n_tokens = len(graph.input_tokens)
     n_features = len(graph.selected_features)
     error_start = n_features

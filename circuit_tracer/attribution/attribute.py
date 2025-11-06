@@ -27,43 +27,11 @@ from typing import Literal
 import torch
 from tqdm import tqdm
 
+from circuit_tracer.attribution.targets import AttributionTargets
 from circuit_tracer.graph import Graph
 from circuit_tracer.replacement_model import ReplacementModel
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.disk_offload import offload_modules
-
-
-@torch.no_grad()
-def compute_salient_logits(
-    logits: torch.Tensor,
-    unembed_proj: torch.Tensor,
-    *,
-    max_n_logits: int = 10,
-    desired_logit_prob: float = 0.95,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Pick the smallest logit set whose cumulative prob >= *desired_logit_prob*.
-
-    Args:
-        logits: ``(d_vocab,)`` vector (single position).
-        unembed_proj: ``(d_model, d_vocab)`` unembedding matrix.
-        max_n_logits: Hard cap *k*.
-        desired_logit_prob: Cumulative probability threshold *p*.
-
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            * logit_indices - ``(k,)`` vocabulary ids.
-            * logit_probs   - ``(k,)`` softmax probabilities.
-            * demeaned_vecs - ``(k, d_model)`` unembedding columns, demeaned.
-    """
-
-    probs = torch.softmax(logits, dim=-1)
-    top_p, top_idx = torch.topk(probs, max_n_logits)
-    cutoff = int(torch.searchsorted(torch.cumsum(top_p, 0), desired_logit_prob)) + 1
-    top_p, top_idx = top_p[:cutoff], top_idx[:cutoff]
-
-    cols = unembed_proj[:, top_idx]
-    demeaned = cols - unembed_proj.mean(dim=-1, keepdim=True)
-    return top_idx, top_p, demeaned.T
 
 
 def compute_partial_influences(edge_matrix, logit_p, row_to_node_index, max_iter=128, device=None):
@@ -93,7 +61,9 @@ def attribute(
     prompt: str | torch.Tensor | list[int],
     model: ReplacementModel,
     *,
-    quantity_to_attribute: list[tuple[str, float, torch.Tensor]] | None = None,
+    attribution_targets: (
+        list[tuple[str, float, torch.Tensor] | int | str] | torch.Tensor | None
+    ) = None,
     max_n_logits: int = 10,
     desired_logit_prob: float = 0.95,
     batch_size: int = 512,
@@ -107,11 +77,19 @@ def attribute(
     Args:
         prompt: Text, token ids, or tensor - will be tokenized if str.
         model: Frozen ``ReplacementModel``
-        quantity_to_attribute: Custom target nodes for attribution. Each tuple contains
-                               (token_id, probability, vector). If None, automatically
-                               selects top logits based on desired_logit_prob.
-        max_n_logits: Max number of logit nodes.
-        desired_logit_prob: Keep logits until cumulative prob >= this value.
+        attribution_targets: Flexible attribution target specification in one of several formats:
+                          - None: Auto-select salient logits based on probability threshold
+                          - torch.Tensor: Tensor of token indices
+                          - list[tuple[str, float, torch.Tensor] | int | str]: List where
+                            each element can be:
+                              * int or str: Token ID/string (auto-computes probability & vector,
+                                returns tensor of indices)
+                              * tuple[str, float, torch.Tensor]: Fully specified logit spec with
+                                arbitrary string tokens (or functions thereof) that may not be in
+                                vocabulary
+        max_n_logits: Max number of logit nodes (used when attribution_targets is None).
+        desired_logit_prob: Keep logits until cumulative prob >= this value
+                           (used when attribution_targets is None).
         batch_size: How many source nodes to process per backward pass.
         max_feature_nodes: Max number of feature nodes to include in the graph.
         offload: Method for offloading model parameters to save memory.
@@ -141,7 +119,7 @@ def attribute(
         return _run_attribution(
             model=model,
             prompt=prompt,
-            quantity_to_attribute=quantity_to_attribute,
+            attribution_targets=attribution_targets,
             max_n_logits=max_n_logits,
             desired_logit_prob=desired_logit_prob,
             batch_size=batch_size,
@@ -163,7 +141,7 @@ def attribute(
 def _run_attribution(
     model,
     prompt,
-    quantity_to_attribute,
+    attribution_targets,
     max_n_logits,
     desired_logit_prob,
     batch_size,
@@ -207,27 +185,26 @@ def _run_attribution(
     n_layers, n_pos, _ = activation_matrix.shape
     total_active_feats = activation_matrix._nnz()
 
-    if quantity_to_attribute is not None:
-        logit_idx, logit_p, logit_vecs = zip(*quantity_to_attribute)
-        logit_p = torch.tensor(logit_p)
-        logit_vecs = torch.stack(logit_vecs)
-    else:
-        logit_idx, logit_p, logit_vecs = compute_salient_logits(
-            ctx.logits[0, -1],
-            model.unembed.W_U,
-            max_n_logits=max_n_logits,
-            desired_logit_prob=desired_logit_prob,
-        )
+    targets = AttributionTargets(
+        attribution_targets=attribution_targets,
+        logits=ctx.logits[0, -1],
+        unembed_proj=model.unembed.W_U,
+        tokenizer=model.tokenizer,
+        max_n_logits=max_n_logits,
+        desired_logit_prob=desired_logit_prob,
+    )
+
+    if attribution_targets is None:
         logger.info(
-            f"Selected {len(logit_idx)} logits with cumulative probability \
-                {logit_p.sum().item():.4f}"
+            f"Selected {len(targets)} logits with cumulative probability "
+            f"{targets.logit_probabilities.sum().item():.4f}"
         )
 
     if offload:
         offload_handles += offload_modules([model.unembed, model.embed], offload)
 
     logit_offset = len(feat_layers) + (n_layers + 1) * n_pos
-    n_logits = len(logit_idx)
+    n_logits = len(targets)
     total_nodes = logit_offset + n_logits
 
     max_feature_nodes = min(max_feature_nodes or total_active_feats, total_active_feats)
@@ -242,8 +219,8 @@ def _run_attribution(
     # Phase 3: logit attribution
     logger.info("Phase 3: Computing logit attributions")
     phase_start = time.time()
-    for i in range(0, len(logit_idx), batch_size):
-        batch = logit_vecs[i : i + batch_size]
+    for i in range(0, len(targets), batch_size):
+        batch = targets.logit_vectors[i : i + batch_size]
         rows = ctx.compute_batch(
             layers=torch.full((batch.shape[0],), n_layers),
             positions=torch.full((batch.shape[0],), n_pos - 1),
@@ -269,7 +246,7 @@ def _run_attribution(
             pending = torch.arange(total_active_feats)
         else:
             influences = compute_partial_influences(
-                edge_matrix[:st], logit_p, row_to_node_index[:st]
+                edge_matrix[:st], targets.logit_probabilities, row_to_node_index[:st]
             )
             feature_rank = torch.argsort(influences[:total_active_feats], descending=True).cpu()
             queue_size = min(update_interval * batch_size, max_feature_nodes - n_visited)
@@ -314,8 +291,7 @@ def _run_attribution(
     graph = Graph(
         input_string=model.tokenizer.decode(input_ids),
         input_tokens=input_ids,
-        logit_tokens=logit_idx,
-        logit_probabilities=logit_p,
+        attribution_targets=targets,
         active_features=activation_matrix.indices().T,
         activation_values=activation_matrix.values(),
         selected_features=selected_features,

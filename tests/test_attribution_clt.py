@@ -53,7 +53,7 @@ def verify_feature_edges(
     s = graph.input_tokens
     adjacency_matrix = graph.adjacency_matrix.to(get_default_device())
     active_features = graph.active_features.to(get_default_device())
-    logit_tokens = graph.logit_tokens.to(get_default_device())
+    logit_tokens = graph.logit_token_ids
     total_active_features = active_features.size(0)
 
     logits, activation_cache = model.get_activations(s, apply_activation_function=False)
