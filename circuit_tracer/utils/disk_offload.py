@@ -3,6 +3,7 @@ import os
 import tempfile
 from typing import Literal
 
+import torch
 from safetensors.torch import load_file, save_file
 
 _offload_files = set()
@@ -13,7 +14,8 @@ _TEMP_PREFIX = "safetensors-offload-YqKRr8m3-"
 @atexit.register
 def cleanup_offload_files():
     for f in _offload_files:
-        os.remove(f)
+        if os.path.exists(f):
+            os.remove(f)
 
 
 def cleanup_all_offload_files():
@@ -35,7 +37,8 @@ def disk_offload_module(module):
     module.to(device="meta")
 
     def reload_handle(device=None):
-        module.load_state_dict(load_file(f.name, device=(device or str(org_device))), assign=True)
+        target_device = str(device or org_device)
+        module.load_state_dict(load_file(f.name, device=target_device), assign=True)
         os.remove(f.name)
         _offload_files.remove(f.name)
 
@@ -52,6 +55,29 @@ def cpu_offload_module(module):
     return reload_handle
 
 
-def offload_modules(modules, offload_type: Literal["cpu", "disk"]):
+def offload_modules(
+    modules: (
+        list | torch.nn.Module | torch.nn.ModuleList | torch.nn.ModuleDict | torch.nn.Sequential
+    ),
+    offload_type: Literal["cpu", "disk"],
+) -> list:
+    """Offload one or more modules to CPU or disk.
+
+    Args:
+        modules: A single module, list of modules, or PyTorch module container
+                 (ModuleList, ModuleDict, Sequential)
+        offload_type: Type of offload - "cpu" or "disk"
+
+    Returns:
+        List of reload handles, one per module
+    """
     offload_fn = disk_offload_module if offload_type == "disk" else cpu_offload_module
-    return [offload_fn(module) for module in modules]
+
+    container_types = (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)
+    if isinstance(modules, container_types):
+        mods = modules.values() if isinstance(modules, torch.nn.ModuleDict) else modules
+        return [offload_fn(module) for module in mods]
+    if isinstance(modules, list):
+        return [offload_fn(module) for module in modules]
+
+    return [offload_fn(modules)]
