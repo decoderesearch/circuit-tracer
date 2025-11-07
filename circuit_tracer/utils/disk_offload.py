@@ -3,7 +3,7 @@ import os
 import tempfile
 from typing import Literal
 
-import torch
+from torch import nn
 from safetensors.torch import load_file, save_file
 
 _offload_files = set()
@@ -56,9 +56,7 @@ def cpu_offload_module(module):
 
 
 def offload_modules(
-    modules: (
-        list | torch.nn.Module | torch.nn.ModuleList | torch.nn.ModuleDict | torch.nn.Sequential
-    ),
+    modules: list | nn.Module | nn.ModuleList | nn.ModuleDict | nn.Sequential,
     offload_type: Literal["cpu", "disk"],
 ) -> list:
     """Offload one or more modules to CPU or disk.
@@ -73,11 +71,10 @@ def offload_modules(
     """
     offload_fn = disk_offload_module if offload_type == "disk" else cpu_offload_module
 
-    container_types = (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)
-    if isinstance(modules, container_types):
-        mods = modules.values() if isinstance(modules, torch.nn.ModuleDict) else modules
-        return [offload_fn(module) for module in mods]
-    if isinstance(modules, list):
-        return [offload_fn(module) for module in modules]
-
-    return [offload_fn(modules)]
+    if isinstance(modules, nn.ModuleDict):
+        mods = modules.values()
+    elif isinstance(modules, (list, nn.ModuleList, nn.Sequential)):
+        mods = modules
+    else:
+        mods = [modules]
+    return [offload_fn(module) for module in mods]
