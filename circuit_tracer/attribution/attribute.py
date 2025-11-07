@@ -82,8 +82,8 @@ def attribute(
                           - torch.Tensor: Tensor of token indices
                           - list[tuple[str, float, torch.Tensor] | int | str]: List where
                             each element can be:
-                              * int or str: Token ID/string (auto-computes probability & vector,
-                                returns tensor of indices)
+                              * int or str: Token ID/string (auto-resolves probability and
+                                unembed vector)
                               * tuple[str, float, torch.Tensor]: Fully specified logit spec with
                                 arbitrary string tokens (or functions thereof) that may not be in
                                 vocabulary

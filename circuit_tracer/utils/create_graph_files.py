@@ -56,7 +56,7 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
 
             # vocab_idx can be either a valid token_id (< vocab_size) or a virtual
             # index (>= vocab_size) for arbitrary strings/functions thereof. The virtual indices
-            # encode the position in the list as: vocab_size + position.
+            # encode the position in the logit_targets list as: vocab_size + position.
             token, vocab_idx = graph.logit_targets[pos]
 
             nodes[node_idx] = Node.logit_node(
