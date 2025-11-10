@@ -217,7 +217,7 @@ def run_attribution(args, parser):
     if not args.model:
         parser.error("--model must be specified when not provided in transcoder config")
 
-    model_instance = ReplacementModel.from_pretrained_and_transcoders(
+    model_instance = ReplacementModel.boot_transformers_and_transcoders(
         args.model, transcoder, dtype=dtype
     )
 
@@ -243,6 +243,7 @@ def run_attribution(args, parser):
         logging.info(f"Creating graph files with slug: {args.slug}")
         create_graph_files(
             graph_or_path=graph,  # Use the graph object directly
+            tokenizer=model_instance.tokenizer,
             slug=args.slug,
             scan=None,  # No scan argument needed
             output_path=args.graph_file_dir,

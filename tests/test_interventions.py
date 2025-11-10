@@ -6,7 +6,7 @@ from circuit_tracer import ReplacementModel
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_intervention_return_activations():
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
+    model = ReplacementModel.boot_transformers("google/gemma-2-2b", "gemma")
 
     s = "The National Digital Analytics Group (ND"
 

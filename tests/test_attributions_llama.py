@@ -1,22 +1,23 @@
-import numpy as np
 import pytest
 import torch
 import torch.nn as nn
-from transformer_lens import HookedTransformerConfig
+from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
 
 from circuit_tracer import ReplacementModel, attribute
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import TopK
 from circuit_tracer.utils import get_default_device
+from tests._comparison.attribution.attribute import attribute as legacy_attribute
+from tests._comparison.replacement_model import ReplacementModel as LegacyReplacementModel
 from tests.test_attributions_gemma import verify_feature_edges, verify_token_and_error_edges
 
 
-def load_dummy_llama_model(cfg: HookedTransformerConfig, k: int):
+def load_dummy_llama_model(cfg: LlamaConfig, k: int):
     transcoders = {
         layer_idx: SingleLayerTranscoder(
-            cfg.d_model, cfg.d_model * 4, TopK(k), layer_idx, skip_connection=True
+            cfg.hidden_size, cfg.hidden_size * 4, TopK(k), layer_idx, skip_connection=True
         )
-        for layer_idx in range(cfg.n_layers)
+        for layer_idx in range(cfg.num_hidden_layers)
     }
     for transcoder in transcoders.values():
         for _, param in transcoder.named_parameters():
@@ -25,8 +26,10 @@ def load_dummy_llama_model(cfg: HookedTransformerConfig, k: int):
     transcoder_set = TranscoderSet(
         transcoders, feature_input_hook="mlp.hook_in", feature_output_hook="mlp.hook_out"
     )
-    model = ReplacementModel.from_config(cfg, transcoder_set)
-    assert model.tokenizer is not None
+
+    hf_model = LlamaForCausalLM(cfg).to(get_default_device())  # type: ignore[attr-defined]
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")  # to avoid gated repos
+    model = ReplacementModel.from_hf_model(hf_model, tokenizer, transcoder_set)
 
     ids = model.tokenizer.all_special_ids
     type(model.tokenizer).all_special_ids = property(lambda self: [0] + ids)  # type: ignore
@@ -37,78 +40,30 @@ def load_dummy_llama_model(cfg: HookedTransformerConfig, k: int):
 
 
 def verify_small_llama_model(s: torch.Tensor):
-    llama_small_cfg = {
-        "n_layers": 2,
-        "d_model": 8,
-        "n_ctx": 2048,
-        "d_head": 4,
-        "model_name": "Llama-3.2-1B",
-        "n_heads": 2,
-        "d_mlp": 16,
-        "act_fn": "silu",
-        "d_vocab": 16,
-        "eps": 1e-05,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "attn_scale": np.float64(8.0),
-        "use_split_qkv_input": False,
-        "use_hook_mlp_in": False,
-        "use_attn_in": False,
-        "use_local_attn": False,
-        "ungroup_grouped_query_attention": False,
-        "original_architecture": "LlamaForCausalLM",
-        "from_checkpoint": False,
-        "checkpoint_index": None,
-        "checkpoint_label_type": None,
-        "checkpoint_value": None,
-        "tokenizer_name": "gpt2",  # using wrong tokenizer to avoid gated repos
-        "window_size": None,
-        "attn_types": None,
-        "init_mode": "gpt2",
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "n_devices": 1,
-        "attention_dir": "causal",
-        "attn_only": False,
-        "seed": None,
-        "initializer_range": np.float64(0.017677669529663688),
-        "init_weights": False,
-        "scale_attn_by_inverse_layer_idx": False,
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 16,
-        "parallel_attn_mlp": False,
-        "rotary_dim": 4,
-        "n_params": 1073741824,
-        "use_hook_tokens": False,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 2,
-        "post_embedding_ln": False,
-        "rotary_base": 500000.0,
-        "trust_remote_code": False,
-        "rotary_adjacent_pairs": False,
-        "load_in_4bit": False,
-        "num_experts": None,
-        "experts_per_token": None,
-        "relative_attention_max_distance": None,
-        "relative_attention_num_buckets": None,
-        "decoder_start_token_id": None,
-        "tie_word_embeddings": False,
-        "use_normalization_before_and_after": False,
-        "attn_scores_soft_cap": -1.0,
-        "output_logits_soft_cap": -1.0,
-        "use_NTK_by_parts_rope": True,
-        "NTK_by_parts_low_freq_factor": 1.0,
-        "NTK_by_parts_high_freq_factor": 4.0,
-        "NTK_by_parts_factor": 32.0,
-    }
-
-    cfg = HookedTransformerConfig.from_dict(llama_small_cfg)
+    # Create a small Llama config for testing
+    llama_small_cfg = LlamaConfig(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        hidden_act="silu",
+        max_position_embeddings=2048,
+        initializer_range=0.017677669529663688,
+        rms_norm_eps=1e-5,
+        use_cache=True,
+        pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=2,
+        tie_word_embeddings=False,
+        rope_theta=500000.0,
+        rope_scaling=None,
+        attention_bias=False,
+        attention_dropout=0.0,
+    )
     k = 4
-    model = load_dummy_llama_model(cfg, k)
+    model = load_dummy_llama_model(llama_small_cfg, k)
     graph = attribute(s, model)
 
     verify_token_and_error_edges(model, graph)
@@ -116,77 +71,30 @@ def verify_small_llama_model(s: torch.Tensor):
 
 
 def verify_large_llama_model(s: torch.Tensor):
-    llama_large_cfg = {
-        "n_layers": 8,
-        "d_model": 128,
-        "n_ctx": 2048,
-        "d_head": 32,
-        "model_name": "Llama-3.2-1B",
-        "n_heads": 4,
-        "d_mlp": 512,
-        "act_fn": "silu",
-        "d_vocab": 128,
-        "eps": 1e-05,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "attn_scale": np.float64(8.0),
-        "use_split_qkv_input": False,
-        "use_hook_mlp_in": False,
-        "use_attn_in": False,
-        "use_local_attn": False,
-        "ungroup_grouped_query_attention": False,
-        "original_architecture": "LlamaForCausalLM",
-        "from_checkpoint": False,
-        "checkpoint_index": None,
-        "checkpoint_label_type": None,
-        "checkpoint_value": None,
-        "tokenizer_name": "gpt2",  # using wrong tokenizer to avoid gated repos
-        "window_size": None,
-        "attn_types": None,
-        "init_mode": "gpt2",
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "n_devices": 1,
-        "attention_dir": "causal",
-        "attn_only": False,
-        "seed": None,
-        "initializer_range": np.float64(0.017677669529663688),
-        "init_weights": False,
-        "scale_attn_by_inverse_layer_idx": False,
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 128,
-        "parallel_attn_mlp": False,
-        "rotary_dim": 32,
-        "n_params": 1073741824,
-        "use_hook_tokens": False,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 4,
-        "post_embedding_ln": False,
-        "rotary_base": 500000.0,
-        "trust_remote_code": False,
-        "rotary_adjacent_pairs": False,
-        "load_in_4bit": False,
-        "num_experts": None,
-        "experts_per_token": None,
-        "relative_attention_max_distance": None,
-        "relative_attention_num_buckets": None,
-        "decoder_start_token_id": None,
-        "tie_word_embeddings": False,
-        "use_normalization_before_and_after": False,
-        "attn_scores_soft_cap": -1.0,
-        "output_logits_soft_cap": -1.0,
-        "use_NTK_by_parts_rope": True,
-        "NTK_by_parts_low_freq_factor": 1.0,
-        "NTK_by_parts_high_freq_factor": 4.0,
-        "NTK_by_parts_factor": 32.0,
-    }
-    cfg = HookedTransformerConfig.from_dict(llama_large_cfg)
+    # Create a larger Llama config for testing
+    llama_large_cfg = LlamaConfig(
+        vocab_size=128,
+        hidden_size=128,
+        intermediate_size=512,
+        num_hidden_layers=8,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        hidden_act="silu",
+        max_position_embeddings=2048,
+        initializer_range=0.017677669529663688,
+        rms_norm_eps=1e-5,
+        use_cache=True,
+        pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=2,
+        tie_word_embeddings=False,
+        rope_theta=500000.0,
+        rope_scaling=None,
+        attention_bias=False,
+        attention_dropout=0.0,
+    )
     k = 16
-    model = load_dummy_llama_model(cfg, k)
+    model = load_dummy_llama_model(llama_large_cfg, k)
     graph = attribute(s, model)
 
     verify_token_and_error_edges(model, graph)
@@ -194,7 +102,7 @@ def verify_large_llama_model(s: torch.Tensor):
 
 
 def verify_llama_3_2_1b(s: str):
-    model = ReplacementModel.from_pretrained("meta-llama/Llama-3.2-1B", "llama")
+    model = ReplacementModel.boot_transformers("meta-llama/Llama-3.2-1B", "llama")
     graph = attribute(s, model, batch_size=128)
 
     verify_token_and_error_edges(model, graph)
@@ -215,3 +123,54 @@ def test_large_llama_model():
 def test_llama_3_2_1b():
     s = "The National Digital Analytics Group (ND"
     verify_llama_3_2_1b(s)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_bridge_vs_legacy_llama_3_2_1b():
+    """Test Llama 3.2 1B attribution comparing bridge vs legacy implementations."""
+    prompt = "The National Digital Analytics Group (ND"
+
+    # Load bridge model (new implementation)
+    bridge_model = ReplacementModel.boot_transformers("meta-llama/Llama-3.2-1B", "llama")
+
+    # Load legacy model (old implementation)
+    legacy_model = LegacyReplacementModel.from_pretrained("meta-llama/Llama-3.2-1B", "llama")
+
+    # Run attribution on both
+    bridge_graph = attribute(prompt, bridge_model, batch_size=128)
+    legacy_graph = legacy_attribute(prompt, legacy_model, batch_size=128)
+
+    # Check if active features match
+    assert torch.allclose(bridge_graph.active_features, legacy_graph.active_features), (
+        "Active features differ!"
+    )
+
+    # Check if activation values match
+    assert torch.allclose(
+        bridge_graph.activation_values, legacy_graph.activation_values, atol=1e-3, rtol=1e-4
+    ), "Activation values differ!"
+
+    # Check if adjacency matrices match
+    diff = (bridge_graph.adjacency_matrix - legacy_graph.adjacency_matrix).abs()
+    max_diff = diff.max()
+    mean_diff = diff.mean()
+
+    # Allow for numerical precision differences due to different computation paths
+    assert torch.allclose(
+        bridge_graph.adjacency_matrix, legacy_graph.adjacency_matrix, atol=1e-3, rtol=1e-4
+    ), f"Adjacency matrices differ! Max diff: {max_diff:.6e}, Mean diff: {mean_diff:.6e}"
+
+    # Verify feature edges for both
+    n_active = len(bridge_graph.active_features)
+    n_samples = min(100, n_active)
+
+    verify_feature_edges(
+        legacy_model,  # type: ignore
+        legacy_graph,
+        n_samples=n_samples,
+    )
+    verify_feature_edges(
+        bridge_model,
+        bridge_graph,
+        n_samples=n_samples,
+    )

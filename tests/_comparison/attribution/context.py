@@ -14,7 +14,7 @@ from einops import einsum
 from transformer_lens.hook_points import HookPoint
 
 if TYPE_CHECKING:
-    from circuit_tracer.replacement_model import ReplacementModel
+    from ..replacement_model import ReplacementModel  # noqa: TID252
 
 
 class AttributionContext:
@@ -86,7 +86,7 @@ class AttributionContext:
             (f"blocks.{layer}.{feature_input_hook}", partial(_cache, layer=layer))
             for layer in range(self.n_layers)
         ]
-        hooks.append(("unembed.hook_in", partial(_cache, layer=self.n_layers)))
+        hooks.append(("unembed.hook_pre", partial(_cache, layer=self.n_layers)))
         return hooks
 
     def _compute_score_hook(

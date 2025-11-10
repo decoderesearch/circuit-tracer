@@ -175,3 +175,5 @@ cython_debug/
 
 *.parquet
 .vscode/
+
+CLAUDE.md

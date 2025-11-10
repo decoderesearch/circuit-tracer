@@ -1,16 +1,17 @@
 from functools import partial
 
-import numpy as np
 import pytest
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from transformer_lens import HookedTransformerConfig
+from transformers import AutoTokenizer, Gemma2Config, Gemma2ForCausalLM
 
 from circuit_tracer import Graph, ReplacementModel, attribute
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.utils import get_default_device
+from tests._comparison.attribution.attribute import attribute as legacy_attribute
+from tests._comparison.replacement_model import ReplacementModel as LegacyReplacementModel
 
 
 def verify_token_and_error_edges(
@@ -65,12 +66,77 @@ def verify_token_and_error_edges(
         expected_activation_difference = expected_effects[:total_active_features]
         expected_logit_difference = expected_effects[-len(logit_tokens) :]
 
+        activation_diff = (
+            new_relevant_activations - (relevant_activations + expected_activation_difference)
+        ).abs()
+        activation_rel_diff = activation_diff / (
+            (relevant_activations + expected_activation_difference).abs() + 1e-8
+        )
+
+        logit_diff = (
+            new_demeaned_relevant_logits - (demeaned_relevant_logits + expected_logit_difference)
+        ).abs()
+        logit_rel_diff = logit_diff / (
+            (demeaned_relevant_logits + expected_logit_difference).abs() + 1e-8
+        )
+
+        if not torch.allclose(
+            new_relevant_activations,
+            relevant_activations + expected_activation_difference,
+            atol=act_atol,
+            rtol=act_rtol,
+        ):
+            max_abs_idx = activation_diff.argmax()
+            max_rel_idx = activation_rel_diff.argmax()
+            expected_acts = relevant_activations + expected_activation_difference
+
+            print("Activation check failed:")
+            print(
+                f"  Max abs diff: {activation_diff.max():.6e} "
+                f"({new_relevant_activations[max_abs_idx].item():.6e} vs "
+                f"{expected_acts[max_abs_idx].item():.6e})"
+            )
+            print(f"  Mean abs diff: {activation_diff.mean():.6e}")
+            print(
+                f"  Max rel diff: {activation_rel_diff.max():.6e} "
+                f"({new_relevant_activations[max_rel_idx].item():.6e} vs "
+                f"{expected_acts[max_rel_idx].item():.6e})"
+            )
+            print(f"  Mean rel diff: {activation_rel_diff.mean():.6e}")
+            print(f"  Tolerance: atol={act_atol}, rtol={act_rtol}")
+
         assert torch.allclose(
             new_relevant_activations,
             relevant_activations + expected_activation_difference,
             atol=act_atol,
             rtol=act_rtol,
         )
+
+        if not torch.allclose(
+            new_demeaned_relevant_logits,
+            demeaned_relevant_logits + expected_logit_difference,
+            atol=logit_atol,
+            rtol=logit_rtol,
+        ):
+            max_abs_idx = logit_diff.argmax()
+            max_rel_idx = logit_rel_diff.argmax()
+            expected_logits = demeaned_relevant_logits + expected_logit_difference
+
+            print("Logit check failed:")
+            print(
+                f"  Max abs diff: {logit_diff.max():.6e} "
+                f"({new_demeaned_relevant_logits[max_abs_idx].item():.6e} vs "
+                f"{expected_logits[max_abs_idx].item():.6e})"
+            )
+            print(f"  Mean abs diff: {logit_diff.mean():.6e}")
+            print(
+                f"  Max rel diff: {logit_rel_diff.max():.6e} "
+                f"({new_demeaned_relevant_logits[max_rel_idx].item():.6e} vs "
+                f"{expected_logits[max_rel_idx].item():.6e})"
+            )
+            print(f"  Mean rel diff: {logit_rel_diff.mean():.6e}")
+            print(f"  Tolerance: atol={logit_atol}, rtol={logit_rtol}")
+
         assert torch.allclose(
             new_demeaned_relevant_logits,
             demeaned_relevant_logits + expected_logit_difference,
@@ -152,12 +218,77 @@ def verify_feature_edges(
         expected_activation_difference = expected_effects[:total_active_features]
         expected_logit_difference = expected_effects[-len(logit_tokens) :]
 
+        activation_diff = (
+            new_relevant_activations - (relevant_activations + expected_activation_difference)
+        ).abs()
+        activation_rel_diff = activation_diff / (
+            (relevant_activations + expected_activation_difference).abs() + 1e-8
+        )
+
+        logit_diff = (
+            new_demeaned_relevant_logits - (demeaned_relevant_logits + expected_logit_difference)
+        ).abs()
+        logit_rel_diff = logit_diff / (
+            (demeaned_relevant_logits + expected_logit_difference).abs() + 1e-8
+        )
+
+        if not torch.allclose(
+            new_relevant_activations,
+            relevant_activations + expected_activation_difference,
+            atol=act_atol,
+            rtol=act_rtol,
+        ):
+            max_abs_idx = activation_diff.argmax()
+            max_rel_idx = activation_rel_diff.argmax()
+            expected_acts = relevant_activations + expected_activation_difference
+
+            print("Activation check failed:")
+            print(
+                f"  Max abs diff: {activation_diff.max():.6e} "
+                f"({new_relevant_activations[max_abs_idx].item():.6e} vs "
+                f"{expected_acts[max_abs_idx].item():.6e})"
+            )
+            print(f"  Mean abs diff: {activation_diff.mean():.6e}")
+            print(
+                f"  Max rel diff: {activation_rel_diff.max():.6e} "
+                f"({new_relevant_activations[max_rel_idx].item():.6e} vs "
+                f"{expected_acts[max_rel_idx].item():.6e})"
+            )
+            print(f"  Mean rel diff: {activation_rel_diff.mean():.6e}")
+            print(f"  Tolerance: atol={act_atol}, rtol={act_rtol}")
+
         assert torch.allclose(
             new_relevant_activations,
             relevant_activations + expected_activation_difference,
             atol=act_atol,
             rtol=act_rtol,
         )
+
+        if not torch.allclose(
+            new_demeaned_relevant_logits,
+            demeaned_relevant_logits + expected_logit_difference,
+            atol=logit_atol,
+            rtol=logit_rtol,
+        ):
+            max_abs_idx = logit_diff.argmax()
+            max_rel_idx = logit_rel_diff.argmax()
+            expected_logits = demeaned_relevant_logits + expected_logit_difference
+
+            print("Logit check failed:")
+            print(
+                f"  Max abs diff: {logit_diff.max():.6e} "
+                f"({new_demeaned_relevant_logits[max_abs_idx].item():.6e} vs "
+                f"{expected_logits[max_abs_idx].item():.6e})"
+            )
+            print(f"  Mean abs diff: {logit_diff.mean():.6e}")
+            print(
+                f"  Max rel diff: {logit_rel_diff.max():.6e} "
+                f"({new_demeaned_relevant_logits[max_rel_idx].item():.6e} vs "
+                f"{expected_logits[max_rel_idx].item():.6e})"
+            )
+            print(f"  Mean rel diff: {logit_rel_diff.mean():.6e}")
+            print(f"  Tolerance: atol={logit_atol}, rtol={logit_rtol}")
+
         assert torch.allclose(
             new_demeaned_relevant_logits,
             demeaned_relevant_logits + expected_logit_difference,
@@ -175,12 +306,12 @@ def verify_feature_edges(
         verify_intervention(expected_effects, layer, pos, feature_idx, new_activation)
 
 
-def load_dummy_gemma_model(cfg: HookedTransformerConfig):
+def load_dummy_gemma_model(cfg: Gemma2Config):
     transcoders = {
         layer_idx: SingleLayerTranscoder(
-            cfg.d_model, cfg.d_model * 4, JumpReLU(torch.tensor(0.0), 0.1), layer_idx
+            cfg.hidden_size, cfg.hidden_size * 4, JumpReLU(torch.tensor(0.0), 0.1), layer_idx
         )
-        for layer_idx in range(cfg.n_layers)
+        for layer_idx in range(cfg.num_hidden_layers)
     }
     for transcoder in transcoders.values():
         for _, param in transcoder.named_parameters():
@@ -189,7 +320,10 @@ def load_dummy_gemma_model(cfg: HookedTransformerConfig):
     transcoder_set = TranscoderSet(
         transcoders, feature_input_hook="mlp.hook_in", feature_output_hook="mlp.hook_out"
     )
-    model = ReplacementModel.from_config(cfg, transcoder_set)
+
+    hf_model = Gemma2ForCausalLM(cfg).to(get_default_device())  # type: ignore[attr-defined]
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")  # to avoid gated repos
+    model = ReplacementModel.from_hf_model(hf_model, tokenizer, transcoder_set)
 
     type(model.tokenizer).all_special_ids = property(lambda self: [0])  # type: ignore
 
@@ -205,76 +339,32 @@ def load_dummy_gemma_model(cfg: HookedTransformerConfig):
 
 
 def verify_small_gemma_model(s: torch.Tensor):
-    gemma_small_cfg = {
-        "n_layers": 2,
-        "d_model": 8,
-        "n_ctx": 8192,
-        "d_head": 4,
-        "model_name": "gemma-2-2b",
-        "n_heads": 2,
-        "d_mlp": 16,
-        "act_fn": "gelu_pytorch_tanh",
-        "d_vocab": 16,
-        "eps": 1e-06,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "attn_scale": np.float64(16.0),
-        "use_split_qkv_input": False,
-        "use_hook_mlp_in": False,
-        "use_attn_in": False,
-        "use_local_attn": True,
-        "ungroup_grouped_query_attention": False,
-        "original_architecture": "Gemma2ForCausalLM",
-        "from_checkpoint": False,
-        "checkpoint_index": None,
-        "checkpoint_label_type": None,
-        "checkpoint_value": None,
-        "tokenizer_name": "gpt2",  # using wrong tokenizer to avoid gated repos
-        "window_size": 4096,
-        "attn_types": ["global", "local"],
-        "init_mode": "gpt2",
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "n_devices": 1,
-        "attention_dir": "causal",
-        "attn_only": False,
-        "seed": None,
-        "initializer_range": 0.02,
-        "init_weights": False,
-        "scale_attn_by_inverse_layer_idx": False,
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 16,
-        "parallel_attn_mlp": False,
-        "rotary_dim": 4,
-        "n_params": 2146959360,
-        "use_hook_tokens": False,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 2,
-        "post_embedding_ln": False,
-        "rotary_base": 10000.0,
-        "trust_remote_code": False,
-        "rotary_adjacent_pairs": False,
-        "load_in_4bit": False,
-        "num_experts": None,
-        "experts_per_token": None,
-        "relative_attention_max_distance": None,
-        "relative_attention_num_buckets": None,
-        "decoder_start_token_id": None,
-        "tie_word_embeddings": False,
-        "use_normalization_before_and_after": True,
-        "attn_scores_soft_cap": 50.0,
-        "output_logits_soft_cap": 0.0,
-        "use_NTK_by_parts_rope": False,
-        "NTK_by_parts_low_freq_factor": 1.0,
-        "NTK_by_parts_high_freq_factor": 4.0,
-        "NTK_by_parts_factor": 8.0,
-    }
-    cfg = HookedTransformerConfig.from_dict(gemma_small_cfg)
-    model = load_dummy_gemma_model(cfg)
+    # Create a small Gemma2 config for testing
+    gemma_small_cfg = Gemma2Config(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        head_dim=4,
+        hidden_act="gelu_pytorch_tanh",
+        max_position_embeddings=8192,
+        initializer_range=0.02,
+        rms_norm_eps=1e-6,
+        use_cache=True,
+        pad_token_id=0,
+        eos_token_id=1,
+        bos_token_id=2,
+        tie_word_embeddings=False,
+        rope_theta=10000.0,
+        attention_bias=False,
+        attention_dropout=0.0,
+        attn_logit_softcapping=50.0,
+        final_logit_softcapping=0.0,
+        sliding_window=4096,
+    )
+    model = load_dummy_gemma_model(gemma_small_cfg)
     graph = attribute(s, model)
 
     verify_token_and_error_edges(model, graph)
@@ -282,93 +372,32 @@ def verify_small_gemma_model(s: torch.Tensor):
 
 
 def verify_large_gemma_model(s: torch.Tensor):
-    gemma_large_cfg = {
-        "n_layers": 16,
-        "d_model": 64,
-        "n_ctx": 8192,
-        "d_head": 32,
-        "model_name": "gemma-2-2b",
-        "n_heads": 16,
-        "d_mlp": 128,
-        "act_fn": "gelu_pytorch_tanh",
-        "d_vocab": 128,
-        "eps": 1e-06,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "attn_scale": np.float64(16.0),
-        "use_split_qkv_input": False,
-        "use_hook_mlp_in": False,
-        "use_attn_in": False,
-        "use_local_attn": True,
-        "ungroup_grouped_query_attention": False,
-        "original_architecture": "Gemma2ForCausalLM",
-        "from_checkpoint": False,
-        "checkpoint_index": None,
-        "checkpoint_label_type": None,
-        "checkpoint_value": None,
-        "tokenizer_name": "gpt2",  # using wrong tokenizer to avoid gated repos
-        "window_size": 4096,
-        "attn_types": [
-            "global",
-            "local",
-            "global",
-            "local",
-            "global",
-            "local",
-            "global",
-            "local",
-            "global",
-            "local",
-            "global",
-            "local",
-            "global",
-            "local",
-            "global",
-            "local",
-        ],
-        "init_mode": "gpt2",
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "n_devices": 1,
-        "attention_dir": "causal",
-        "attn_only": False,
-        "seed": None,
-        "initializer_range": 0.02,
-        "init_weights": False,
-        "scale_attn_by_inverse_layer_idx": False,
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 128,
-        "parallel_attn_mlp": False,
-        "rotary_dim": 32,
-        "n_params": 2146959360,
-        "use_hook_tokens": False,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 16,
-        "post_embedding_ln": False,
-        "rotary_base": 10000.0,
-        "trust_remote_code": False,
-        "rotary_adjacent_pairs": False,
-        "load_in_4bit": False,
-        "num_experts": None,
-        "experts_per_token": None,
-        "relative_attention_max_distance": None,
-        "relative_attention_num_buckets": None,
-        "decoder_start_token_id": None,
-        "tie_word_embeddings": False,
-        "use_normalization_before_and_after": True,
-        "attn_scores_soft_cap": 50.0,
-        "output_logits_soft_cap": 0.0,
-        "use_NTK_by_parts_rope": False,
-        "NTK_by_parts_low_freq_factor": 1.0,
-        "NTK_by_parts_high_freq_factor": 4.0,
-        "NTK_by_parts_factor": 8.0,
-    }
-    cfg = HookedTransformerConfig.from_dict(gemma_large_cfg)
-    model = load_dummy_gemma_model(cfg)
+    # Create a larger Gemma2 config for testing
+    gemma_large_cfg = Gemma2Config(
+        vocab_size=128,
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=16,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        head_dim=32,
+        hidden_act="gelu_pytorch_tanh",
+        max_position_embeddings=8192,
+        initializer_range=0.02,
+        rms_norm_eps=1e-6,
+        use_cache=True,
+        pad_token_id=0,
+        eos_token_id=1,
+        bos_token_id=2,
+        tie_word_embeddings=False,
+        rope_theta=10000.0,
+        attention_bias=False,
+        attention_dropout=0.0,
+        attn_logit_softcapping=50.0,
+        final_logit_softcapping=0.0,
+        sliding_window=4096,
+    )
+    model = load_dummy_gemma_model(gemma_large_cfg)
     graph = attribute(s, model)
 
     verify_token_and_error_edges(model, graph)
@@ -376,7 +405,17 @@ def verify_large_gemma_model(s: torch.Tensor):
 
 
 def verify_gemma_2_2b(s: str):
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
+    model = ReplacementModel.boot_transformers("google/gemma-2-2b", "gemma")
+    graph = attribute(s, model)
+
+    print("Changing logit softcap to 0, as the logits will otherwise be off.")
+    with model.zero_softcap():
+        verify_token_and_error_edges(model, graph)
+        verify_feature_edges(model, graph)
+
+
+def verify_gemma_3_1b(s: str):
+    model = ReplacementModel.boot_transformers("google/gemma-3-1b-pt", "gemma")
     graph = attribute(s, model)
 
     print("Changing logit softcap to 0, as the logits will otherwise be off.")
@@ -386,7 +425,7 @@ def verify_gemma_2_2b(s: str):
 
 
 def verify_gemma_2_2b_clt(s: str):
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mntss/clt-gemma-2-2b-426k")
+    model = ReplacementModel.boot_transformers("google/gemma-2-2b", "mntss/clt-gemma-2-2b-426k")
     graph = attribute(s, model)
 
     print("Changing logit softcap to 0, as the logits will otherwise be off.")
@@ -409,6 +448,69 @@ def test_large_gemma_model():
 def test_gemma_2_2b():
     s = "The National Digital Analytics Group (ND"
     verify_gemma_2_2b(s)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_gemma_3_1b():
+    s = "The National Digital Analytics Group (ND"
+    verify_gemma_3_1b(s)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_bridge_vs_legacy_gemma_2_2b():
+    """Test Gemma 2 2B attribution comparing bridge vs legacy implementations."""
+    prompt = "The National Digital Analytics Group (ND"
+
+    # Load bridge model (new implementation)
+    bridge_model = ReplacementModel.boot_transformers("google/gemma-2-2b", "gemma")
+
+    # Load legacy model (old implementation)
+    legacy_model = LegacyReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
+
+    # Run attribution on both (with zero softcap to avoid logit differences)
+    with bridge_model.zero_softcap():
+        bridge_graph = attribute(prompt, bridge_model)
+
+    with legacy_model.zero_softcap():
+        legacy_graph = legacy_attribute(prompt, legacy_model)
+
+    # Check if active features match
+    assert torch.allclose(bridge_graph.active_features, legacy_graph.active_features), (
+        "Active features differ!"
+    )
+
+    # Check if activation values match
+    assert torch.allclose(
+        bridge_graph.activation_values, legacy_graph.activation_values, atol=1e-3, rtol=1e-4
+    ), "Activation values differ!"
+
+    # Check if adjacency matrices match
+    diff = (bridge_graph.adjacency_matrix - legacy_graph.adjacency_matrix).abs()
+    max_diff = diff.max()
+    mean_diff = diff.mean()
+
+    # Allow for numerical precision differences due to different computation paths
+    assert torch.allclose(
+        bridge_graph.adjacency_matrix, legacy_graph.adjacency_matrix, atol=1e-3, rtol=1e-4
+    ), f"Adjacency matrices differ! Max diff: {max_diff:.6e}, Mean diff: {mean_diff:.6e}"
+
+    # Verify feature edges for both (with zero softcap)
+    n_active = len(bridge_graph.active_features)
+    n_samples = min(100, n_active)
+
+    with legacy_model.zero_softcap():
+        verify_feature_edges(
+            legacy_model,  # type: ignore
+            legacy_graph,
+            n_samples=n_samples,
+        )
+
+    with bridge_model.zero_softcap():
+        verify_feature_edges(
+            bridge_model,
+            bridge_graph,
+            n_samples=n_samples,
+        )
 
 
 # def test_gemma_2_2b_clt():

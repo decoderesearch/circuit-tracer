@@ -2,9 +2,8 @@ import logging
 import os
 import time
 
-
 import torch
-from transformers import AutoTokenizer
+from transformers import PreTrainedTokenizerBase
 
 from circuit_tracer.frontend.graph_models import Metadata, Model, Node, QParams
 from circuit_tracer.frontend.utils import add_graph_metadata
@@ -30,8 +29,15 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
 
     n_features = len(graph.selected_features)
     layers = graph.cfg.n_layers
-    error_end_idx = n_features + graph.n_pos * layers
-    token_end_idx = error_end_idx + len(graph.input_tokens)
+    # Handle input_tokens being either 1D or 2D tensor
+    n_pos = graph.input_tokens.shape[-1] if graph.input_tokens.ndim > 1 else len(graph.input_tokens)
+    error_end_idx = n_features + n_pos * layers
+    token_end_idx = error_end_idx + n_pos
+
+    # Handle input_tokens being either 1D or 2D tensor
+    input_tokens_flat = (
+        graph.input_tokens.squeeze() if graph.input_tokens.ndim > 1 else graph.input_tokens
+    )
 
     for node_idx in node_mask.nonzero().squeeze().tolist():
         if node_idx in range(n_features):
@@ -44,17 +50,17 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
                 activation=graph.activation_values[graph.selected_features[node_idx]].item(),
             )
         elif node_idx in range(n_features, error_end_idx):
-            layer, pos = divmod(node_idx - n_features, graph.n_pos)
+            layer, pos = divmod(node_idx - n_features, n_pos)
             nodes[node_idx] = Node.error_node(layer, pos, influence=cumulative_scores[node_idx])
         elif node_idx in range(error_end_idx, token_end_idx):
             pos = node_idx - error_end_idx
             nodes[node_idx] = Node.token_node(
-                pos, graph.input_tokens[pos], influence=cumulative_scores[node_idx]
+                pos, input_tokens_flat[pos], influence=cumulative_scores[node_idx]
             )
-        elif node_idx in range(token_end_idx, len(cumulative_scores)):
+        elif node_idx in range(token_end_idx, token_end_idx + len(graph.logit_tokens)):
             pos = node_idx - token_end_idx
             nodes[node_idx] = Node.logit_node(
-                pos=graph.n_pos - 1,
+                pos=n_pos - 1,
                 vocab_idx=graph.logit_tokens[pos],
                 token=tokenizer.decode(graph.logit_tokens[pos]),
                 target_logit=pos == 0,
@@ -146,6 +152,7 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
 
 def create_graph_files(
     graph_or_path: Graph | str,
+    tokenizer: PreTrainedTokenizerBase,
     slug: str,
     output_path,
     scan=None,
@@ -179,7 +186,6 @@ def create_graph_files(
     )
     graph.to("cpu")
 
-    tokenizer = AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)
     nodes = create_nodes(graph, node_mask, tokenizer, cumulative_scores)
     used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask)
     model = build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer)

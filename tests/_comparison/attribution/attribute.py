@@ -28,9 +28,10 @@ import torch
 from tqdm import tqdm
 
 from circuit_tracer.graph import Graph
-from circuit_tracer.replacement_model import ReplacementModel
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.disk_offload import offload_modules
+
+from ..replacement_model import ReplacementModel  # noqa: TID252
 
 
 @torch.no_grad()
@@ -174,10 +175,6 @@ def _run_attribution(
     phase_start = time.time()
     input_ids = model.ensure_tokenized(prompt)
 
-    # Need to ensure tensors are 2D due to: https://github.com/TransformerLensOrg/TransformerLens/issues/1050
-    if input_ids.ndim == 1:
-        input_ids = input_ids.unsqueeze(0)
-
     ctx = model.setup_attribution(input_ids)
     activation_matrix = ctx.activation_matrix
 
@@ -191,17 +188,7 @@ def _run_attribution(
     logger.info("Phase 1: Running forward pass")
     phase_start = time.time()
     with ctx.install_hooks(model):
-        cache = {}
-
-        def _cache_ln_final_in_hook(acts, hook):
-            cache["ln_final.hook_in"] = acts
-
-        model.run_with_hooks(
-            input_ids.expand(batch_size, -1),
-            fwd_hooks=[("ln_final.hook_in", _cache_ln_final_in_hook)],
-        )
-        residual = cache["ln_final.hook_in"]
-        # Call ln_final (not _original_component) to ensure hooks that stop gradients are applied
+        residual = model.forward(input_ids.expand(batch_size, -1), stop_at_layer=model.cfg.n_layers)
         ctx._resid_activations[-1] = model.ln_final(residual)
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
@@ -314,7 +301,7 @@ def _run_attribution(
     full_edge_matrix[-n_logits:] = edge_matrix[max_feature_nodes:]
 
     graph = Graph(
-        input_string=model.tokenizer.decode(input_ids[0]),
+        input_string=model.tokenizer.decode(input_ids),
         input_tokens=input_ids,
         logit_tokens=logit_idx,
         logit_probabilities=logit_p,

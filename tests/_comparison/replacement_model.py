@@ -1,45 +1,68 @@
-import logging
-import os
 import warnings
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import contextmanager
 from functools import partial
 
 import torch
 import torch.nn.functional as F
-from transformer_lens.config import TransformerBridgeConfig
-from transformer_lens.factories.architecture_adapter_factory import ArchitectureAdapterFactory
+from torch import nn
+from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
-from transformer_lens.model_bridge import ArchitectureAdapter, TransformerBridge
-from transformer_lens.model_bridge.sources.transformers import (
-    determine_architecture_from_hf_config,
-    get_hf_model_class_for_architecture,
-    map_default_transformer_lens_config,
-    setup_tokenizer,
-)
-from transformer_lens.supported_models import MODEL_ALIASES
-from transformer_lens.utils import get_device
-from transformers import (
-    AutoConfig,
-    AutoTokenizer,
-    PreTrainedTokenizerBase,
-)
-from transformers.modeling_utils import PreTrainedModel
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from circuit_tracer.attribution.context import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 
+from .attribution.context import AttributionContext
+
 # Type definition for an intervention tuple (layer, position, feature_idx, value)
 Intervention = tuple[
-    int | torch.Tensor, int | slice | torch.Tensor, int | torch.Tensor, float | torch.Tensor
+    int | torch.Tensor, int | slice | torch.Tensor, int | torch.Tensor, int | torch.Tensor
 ]
 
 
-class ReplacementModel(TransformerBridge):
+class ReplacementMLP(nn.Module):
+    """Wrapper for a TransformerLens MLP layer that adds in extra hooks"""
+
+    def __init__(self, old_mlp: nn.Module):
+        super().__init__()
+        self.old_mlp = old_mlp
+        self.hook_in = HookPoint()
+        self.hook_out = HookPoint()
+
+    def forward(self, x):
+        x = self.hook_in(x)
+        mlp_out = self.old_mlp(x)
+        return self.hook_out(mlp_out)
+
+
+class ReplacementUnembed(nn.Module):
+    """Wrapper for a TransformerLens Unembed layer that adds in extra hooks"""
+
+    def __init__(self, old_unembed: nn.Module):
+        super().__init__()
+        self.old_unembed = old_unembed
+        self.hook_pre = HookPoint()
+        self.hook_post = HookPoint()
+
+    @property
+    def W_U(self):
+        return self.old_unembed.W_U
+
+    @property
+    def b_U(self):
+        return self.old_unembed.b_U
+
+    def forward(self, x):
+        x = self.hook_pre(x)
+        x = self.old_unembed(x)
+        return self.hook_post(x)
+
+
+class ReplacementModel(HookedTransformer):
     transcoders: TranscoderSet | CrossLayerTranscoder  # Support both types
     feature_input_hook: str
     feature_output_hook: str
@@ -48,51 +71,31 @@ class ReplacementModel(TransformerBridge):
     tokenizer: PreTrainedTokenizerBase
 
     @classmethod
-    def from_hf_model(
+    def from_config(
         cls,
-        model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizerBase,
+        config: HookedTransformerConfig,
         transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
-        device: torch.device | None = None,
-        dtype: torch.dtype = torch.float32,
+        **kwargs,
     ) -> "ReplacementModel":
-        """Create a ReplacementModel from a given a Huggingface model/tokenizer and TranscoderSet
+        """Create a ReplacementModel from a given HookedTransformerConfig and TranscoderSet
 
         Args:
-            model (PreTrainedModel): the model to bridge
-            tokenizer (PreTrainedTokenizerBase): the tokenizer to use
+            config (HookedTransformerConfig): the config of the HookedTransformer
             transcoders (TranscoderSet): The transcoder set with configuration
 
         Returns:
             ReplacementModel: The loaded ReplacementModel
         """
-
-        tl_config = map_default_transformer_lens_config(model.config)
-        if device is None:
-            device = get_default_device()
-
-        architecture = determine_architecture_from_hf_config(model.config)
-
-        # Convert to TransformerBridgeConfig with unified architecture
-        bridge_config = TransformerBridgeConfig.from_dict(tl_config.__dict__)
-        bridge_config.architecture = architecture
-
-        adapter = ArchitectureAdapterFactory.select_architecture_adapter(bridge_config)
-        adapter.cfg.device = device  # type: ignore
-        adapter.cfg.dtype = dtype  # type: ignore
-        rep_model = cls(model=model, adapter=adapter, tokenizer=tokenizer)
-        rep_model._configure_replacement_model(transcoders)
-        return rep_model
+        model = cls(config, **kwargs)
+        model._configure_replacement_model(transcoders)
+        return model
 
     @classmethod
-    def boot_transformers_and_transcoders(
+    def from_pretrained_and_transcoders(
         cls,
         model_name: str,
         transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
-        hf_config_overrides: dict | None = None,
-        device: str | torch.device | None = None,
-        dtype: torch.dtype = torch.float32,
-        tokenizer: PreTrainedTokenizerBase | None = None,
+        **kwargs,
     ) -> "ReplacementModel":
         """Create a ReplacementModel from the name of HookedTransformer and TranscoderSet
 
@@ -103,28 +106,24 @@ class ReplacementModel(TransformerBridge):
         Returns:
             ReplacementModel: The loaded ReplacementModel
         """
-        hf_model, adapter, tokenizer = _boot_model_components(
-            model_name=model_name,
-            hf_config_overrides=hf_config_overrides,
-            device=device,
-            dtype=dtype,
-            tokenizer=tokenizer,
+        model = super().from_pretrained(
+            model_name,
+            fold_ln=False,
+            center_writing_weights=False,
+            center_unembed=False,
+            **kwargs,
         )
-        model = cls(model=hf_model, tokenizer=tokenizer, adapter=adapter)
+
         model._configure_replacement_model(transcoders)
         return model
 
     @classmethod
-    def boot_transformers(
+    def from_pretrained(
         cls,
         model_name: str,
         transcoder_set: str,
-        hf_config_overrides: dict | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
-        tokenizer: PreTrainedTokenizerBase | None = None,
-        lazy_encoder: bool = False,
-        lazy_decoder: bool = True,
         **kwargs,
     ) -> "ReplacementModel":
         """Create a ReplacementModel from model name and transcoder config
@@ -132,15 +131,6 @@ class ReplacementModel(TransformerBridge):
         Args:
             model_name (str): the name of the pretrained HookedTransformer
             transcoder_set (str): Either a predefined transcoder set name, or a config file
-            device (torch.device | None): The device to load the model and transcoders on.
-                If None, uses the default device. Defaults to None.
-            dtype (torch.dtype): The dtype to use for the model and transcoders.
-                Defaults to torch.float32.
-            lazy_encoder (bool): Whether to lazily load encoder weights. If True, encoder
-                weights are not loaded into memory until needed. Defaults to False.
-            lazy_decoder (bool): Whether to lazily load decoder weights. If True, decoder
-                weights are not loaded into memory until needed. Defaults to True.
-            **kwargs: Additional keyword arguments passed to HookedTransformer.from_pretrained
 
         Returns:
             ReplacementModel: The loaded ReplacementModel
@@ -148,46 +138,42 @@ class ReplacementModel(TransformerBridge):
         if device is None:
             device = get_default_device()
 
-        transcoders, _ = load_transcoder_from_hub(
-            transcoder_set,
-            device=device,
-            dtype=dtype,
-            lazy_encoder=lazy_encoder,
-            lazy_decoder=lazy_decoder,
-        )
+        transcoders, _ = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)
 
-        return cls.boot_transformers_and_transcoders(
+        return cls.from_pretrained_and_transcoders(
             model_name,
             transcoders,
-            hf_config_overrides=hf_config_overrides,
             device=device,
             dtype=dtype,
-            tokenizer=tokenizer,
+            **kwargs,
         )
 
     def _configure_replacement_model(self, transcoder_set: TranscoderSet | CrossLayerTranscoder):
-        self.enable_compatibility_mode(no_processing=True)
-
-        transcoder_set.to(self.cfg.device, self.cfg.dtype)  # type: ignore
+        transcoder_set.to(self.cfg.device, self.cfg.dtype)
 
         self.transcoders = transcoder_set
-        self.feature_input_hook = _rewrite_hook(transcoder_set.feature_input_hook)
-        self.original_feature_output_hook = _rewrite_hook(transcoder_set.feature_output_hook)
-        self.feature_output_hook = _rewrite_hook(
-            transcoder_set.feature_output_hook + ".hook_out_grad"
-        )
+        self.feature_input_hook = transcoder_set.feature_input_hook
+        self.original_feature_output_hook = transcoder_set.feature_output_hook
+        self.feature_output_hook = transcoder_set.feature_output_hook + ".hook_out_grad"
         self.skip_transcoder = transcoder_set.skip_connection
         self.scan = transcoder_set.scan
 
+        for block in self.blocks:
+            block.mlp = ReplacementMLP(block.mlp)  # type: ignore
+
+        self.unembed = ReplacementUnembed(self.unembed)
+
         self._configure_gradient_flow()
+        self._deduplicate_attention_buffers()
+        self.setup()
 
     def _configure_gradient_flow(self):
         if isinstance(self.transcoders, TranscoderSet):
             for layer, transcoder in enumerate(self.transcoders):
-                self._configure_skip_connection(layer, transcoder)
+                self._configure_skip_connection(self.blocks[layer], transcoder)
         else:
             for layer in range(self.cfg.n_layers):
-                self._configure_skip_connection(layer, self.transcoders)
+                self._configure_skip_connection(self.blocks[layer], self.transcoders)
 
         def stop_gradient(acts, hook):
             return acts.detach()
@@ -200,25 +186,18 @@ class ReplacementModel(TransformerBridge):
                 block.ln1_post.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
             if hasattr(block, "ln2_post"):
                 block.ln2_post.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
-        self.ln_final.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
+            self.ln_final.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
 
-        for name, param in self.named_parameters():
-            # for reasons I don't understand, if I don't skip attn then test_attribution_clt.py fails
-            if "attn." in name:
-                continue
-            if param.is_leaf:
-                param.requires_grad = False
+        for param in self.parameters():
+            param.requires_grad = False
 
         def enable_gradient(tensor, hook):
             tensor.requires_grad = True
             return tensor
 
-        self.embed.hook_out.add_hook(enable_gradient, is_permanent=True)
-        # needed to pick up on newly added hooks by _configure_skip_connection
-        self._scan_existing_hooks(self, "")
+        self.hook_embed.add_hook(enable_gradient, is_permanent=True)
 
-    def _configure_skip_connection(self, layer: int, transcoder):
-        block = self.blocks[layer]
+    def _configure_skip_connection(self, block, transcoder):
         cached = {}
 
         def cache_activations(acts, hook):
@@ -236,9 +215,9 @@ class ReplacementModel(TransformerBridge):
             return grad_hook(skip + (acts - skip).detach())
 
         # add feature input hook
-        input_hook_parts = self.feature_input_hook.split(".")
+        output_hook_parts = self.feature_input_hook.split(".")
         subblock = block
-        for part in input_hook_parts:
+        for part in output_hook_parts:
             subblock = getattr(subblock, part)
         subblock.add_hook(cache_activations, is_permanent=True)
 
@@ -342,12 +321,12 @@ class ReplacementModel(TransformerBridge):
 
     @contextmanager
     def zero_softcap(self):
-        current_softcap = _get_final_logit_softcapping(self.cfg)
+        current_softcap = self.cfg.output_logits_soft_cap
         try:
-            self.cfg.final_logit_softcapping = 0.0  # type: ignore
+            self.cfg.output_logits_soft_cap = 0.0
             yield
         finally:
-            self.cfg.final_logit_softcapping = current_softcap  # type: ignore
+            self.cfg.output_logits_soft_cap = current_softcap
 
     def ensure_tokenized(self, prompt: str | torch.Tensor | list[int]) -> torch.Tensor:
         """Convert prompt to 1-D tensor of token ids with proper special token handling.
@@ -423,9 +402,6 @@ class ReplacementModel(TransformerBridge):
         assert isinstance(tokens, torch.Tensor), "Tokens must be a tensor"
         assert tokens.ndim == 1, "Tokens must be a 1D tensor"
 
-        # Need to ensure tensors are 2D due to: https://github.com/TransformerLensOrg/TransformerLens/issues/1050
-        tokens = tokens.unsqueeze(0)
-
         mlp_in_cache, mlp_in_caching_hooks, _ = self.get_caching_hooks(
             lambda name: self.feature_input_hook in name
         )
@@ -433,7 +409,7 @@ class ReplacementModel(TransformerBridge):
         mlp_out_cache, mlp_out_caching_hooks, _ = self.get_caching_hooks(
             lambda name: self.feature_output_hook in name
         )
-        logits = self.run_with_hooks(tokens, fwd_hooks=mlp_in_caching_hooks + mlp_out_caching_hooks)  # type: ignore
+        logits = self.run_with_hooks(tokens, fwd_hooks=mlp_in_caching_hooks + mlp_out_caching_hooks)
 
         mlp_in_cache = torch.cat(list(mlp_in_cache.values()), dim=0)
         mlp_out_cache = torch.cat(list(mlp_out_cache.values()), dim=0)
@@ -444,7 +420,7 @@ class ReplacementModel(TransformerBridge):
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
         error_vectors[:, 0] = 0
-        token_vectors = self.embed.W_E[tokens].detach().squeeze(0)  # (n_pos, d_model)
+        token_vectors = self.W_E[tokens].detach()  # (n_pos, d_model)
 
         return AttributionContext(
             activation_matrix=attribution_data["activation_matrix"],
@@ -488,6 +464,7 @@ class ReplacementModel(TransformerBridge):
             if any(
                 hookpoint_to_freeze in hook_point for hookpoint_to_freeze in hookpoints_to_freeze
             ):
+                # don't freeze feature outputs if the layer is not in the constrained range
                 if (
                     self.feature_output_hook in hook_point
                     and constrained_layers
@@ -496,12 +473,10 @@ class ReplacementModel(TransformerBridge):
                     continue
                 selected_hook_points.append(hook_point)
 
-        freeze_cache, cache_hooks, _ = self.get_caching_hooks(
-            names_filter=lambda name: name in selected_hook_points
-        )
+        freeze_cache, cache_hooks, _ = self.get_caching_hooks(names_filter=selected_hook_points)
 
         original_activations, activation_caching_hooks = self._get_activation_caching_hooks()
-        self.run_with_hooks(inputs, fwd_hooks=cache_hooks + activation_caching_hooks)  # type: ignore
+        self.run_with_hooks(inputs, fwd_hooks=cache_hooks + activation_caching_hooks)
 
         def freeze_hook(activations, hook):
             cached_values = freeze_cache[hook.name]
@@ -550,13 +525,12 @@ class ReplacementModel(TransformerBridge):
     def _get_feature_intervention_hooks(
         self,
         inputs: str | torch.Tensor,
-        interventions: Sequence[Intervention],
+        interventions: list[Intervention],
         constrained_layers: range | None = None,
         freeze_attention: bool = True,
         apply_activation_function: bool = True,
         sparse: bool = False,
         using_past_kv_cache: bool = False,
-        return_activations: bool = True,
     ):
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, allowing all effects to propagate (optionally allowing its effects to
@@ -564,8 +538,8 @@ class ReplacementModel(TransformerBridge):
 
         Args:
             input (_type_): the input prompt to intervene on
-            intervention_dict (Sequence[Intervention]): A list of interventions to perform,
-                formatted as a list of (layer, position, feature_idx, value)
+            intervention_dict (List[Intervention]): A list of interventions to perform, formatted
+                as a list of (layer, position, feature_idx, value)
             constrained_layers (range | None): whether to apply interventions only to a certain
                 range, freezing all MLPs within the layer range before doing so. This is mostly
                 applicable to CLTs. If the given range includes all model layers, we also freeze
@@ -580,10 +554,6 @@ class ReplacementModel(TransformerBridge):
             using_past_kv_cache (bool): whether we are generating with past_kv_cache, meaning that
                 n_pos is 1, and we must append onto the existing logit / activation cache if the
                 hooks are run multiple times. Defaults to False
-            return_activations (bool): Whether to compute and return feature activations. If False,
-                activation computation is skipped for layers not being intervened on (when
-                constrained_layers is not set), saving time. Activations are not returned.
-                Defaults to True.
         """
 
         interventions_by_layer = defaultdict(list)
@@ -596,8 +566,7 @@ class ReplacementModel(TransformerBridge):
             n_pos = 1
         elif (freeze_attention or constrained_layers) and interventions:
             original_activations, freeze_hooks = self.setup_intervention_with_freeze(
-                inputs,
-                constrained_layers=constrained_layers,
+                inputs, constrained_layers=constrained_layers
             )
             n_pos = original_activations.size(1)
         else:
@@ -609,7 +578,7 @@ class ReplacementModel(TransformerBridge):
 
         layer_deltas = torch.zeros(
             [self.cfg.n_layers, n_pos, self.cfg.d_model],
-            dtype=self.cfg.dtype,  # type: ignore
+            dtype=self.cfg.dtype,
             device=self.cfg.device,
         )
 
@@ -619,15 +588,6 @@ class ReplacementModel(TransformerBridge):
             sparse=sparse,
             append=using_past_kv_cache,
         )
-
-        if not return_activations:
-            new_activation_hooks = []
-            if not constrained_layers:
-                for loc, hook in activation_hooks:
-                    layer = int(loc.split(".")[1])
-                    if layer in interventions_by_layer:
-                        new_activation_hooks.append((loc, hook))
-            activation_hooks = new_activation_hooks
 
         def calculate_delta_hook(activations, hook, layer: int, layer_interventions):
             if constrained_layers:
@@ -679,10 +639,9 @@ class ReplacementModel(TransformerBridge):
             layer_deltas[layer] *= 0  # clearing this is important for multi-token generation
             return new_acts
 
-        # For forward-time interventions, target the forward MLP output hook
         delta_hooks = [
             (
-                f"blocks.{layer}.{self.original_feature_output_hook}",
+                f"blocks.{layer}.{self.feature_output_hook}",
                 partial(calculate_delta_hook, layer=layer, layer_interventions=layer_interventions),
             )
             for layer, layer_interventions in interventions_by_layer.items()
@@ -690,10 +649,7 @@ class ReplacementModel(TransformerBridge):
 
         intervention_range = constrained_layers if constrained_layers else range(self.cfg.n_layers)
         intervention_hooks = [
-            (
-                f"blocks.{layer}.{self.original_feature_output_hook}",
-                partial(intervention_hook, layer=layer),
-            )
+            (f"blocks.{layer}.{self.feature_output_hook}", partial(intervention_hook, layer=layer))
             for layer in range(self.cfg.n_layers)
         ]
 
@@ -702,9 +658,10 @@ class ReplacementModel(TransformerBridge):
 
         def logit_cache_hook(activations, hook):
             # we need to manually apply the softcap (if used by the model), as it comes post-hook
-            softcap = _get_final_logit_softcapping(self.cfg)
-            if softcap is not None and softcap > 0.0:
-                logits = softcap * F.tanh(activations / softcap)
+            if self.cfg.output_logits_soft_cap > 0.0:
+                logits = self.cfg.output_logits_soft_cap * F.tanh(
+                    activations / self.cfg.output_logits_soft_cap
+                )
             else:
                 logits = activations.clone()
             if using_past_kv_cache:
@@ -712,7 +669,7 @@ class ReplacementModel(TransformerBridge):
             else:
                 cached_logits[0] = logits
 
-        all_hooks.append(("unembed.hook_out", logit_cache_hook))
+        all_hooks.append(("unembed.hook_post", logit_cache_hook))
 
         return all_hooks, cached_logits, activation_cache
 
@@ -720,13 +677,12 @@ class ReplacementModel(TransformerBridge):
     def feature_intervention(
         self,
         inputs: str | torch.Tensor,
-        interventions: Sequence[Intervention],
+        interventions: list[Intervention],
         constrained_layers: range | None = None,
         freeze_attention: bool = True,
         apply_activation_function: bool = True,
         sparse: bool = False,
-        return_activations: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and returns the logits and feature activations. If freeze_attention or
         constrained_layers is True, attention patterns will be frozen, along with MLPs and
@@ -750,10 +706,6 @@ class ReplacementModel(TransformerBridge):
                 feature values.
             sparse (bool): whether to sparsify the activations in the returned cache. Setting
                 this to True will take up less memory, at the expense of slower interventions.
-            return_activations (bool): Whether to compute and return feature activations. If False,
-                activation computation is skipped for layers not being intervened on (when
-                constrained_layers is not set), saving time. Returns None for activations.
-                Defaults to True.
         """
 
         hooks, _, activation_cache = self._get_feature_intervention_hooks(
@@ -763,23 +715,19 @@ class ReplacementModel(TransformerBridge):
             freeze_attention=freeze_attention,
             apply_activation_function=apply_activation_function,
             sparse=sparse,
-            return_activations=return_activations,
         )
 
         with self.hooks(hooks):  # type: ignore
             logits = self(inputs)
 
-        if return_activations:
-            activation_cache = torch.stack(activation_cache)
-        else:
-            activation_cache = None
+        activation_cache = torch.stack(activation_cache)
 
         return logits, activation_cache
 
     def _convert_open_ended_interventions(
         self,
-        interventions: Sequence[Intervention],
-    ) -> Sequence[Intervention]:
+        interventions: list[Intervention],
+    ) -> list[Intervention]:
         """Convert open-ended interventions into position-0 equivalents.
 
         An intervention is *open-ended* if its position component is a ``slice`` whose
@@ -798,14 +746,13 @@ class ReplacementModel(TransformerBridge):
     def feature_intervention_generate(
         self,
         inputs: str | torch.Tensor,
-        interventions: Sequence[Intervention],
+        interventions: list[Intervention],
         constrained_layers: range | None = None,
         freeze_attention: bool = True,
         apply_activation_function: bool = True,
         sparse: bool = False,
-        return_activations: bool = True,
         **kwargs,
-    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[str, torch.Tensor, torch.Tensor]:
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and generates a continuation, along with the logits and activations at
         each generation position.
@@ -839,10 +786,6 @@ class ReplacementModel(TransformerBridge):
                 feature values.
             sparse (bool): whether to sparsify the activations in the returned cache. Setting
                 this to True will take up less memory, at the expense of slower interventions.
-            return_activations (bool): Whether to compute and return feature activations. If False,
-                activation computation is skipped for layers not being intervened on (when
-                constrained_layers is not set), saving time. Returns None for activations.
-                Defaults to True.
         """
 
         feature_intervention_hook_output = self._get_feature_intervention_hooks(
@@ -852,7 +795,6 @@ class ReplacementModel(TransformerBridge):
             freeze_attention=freeze_attention,
             apply_activation_function=apply_activation_function,
             sparse=sparse,
-            return_activations=return_activations,
         )
 
         hooks, logit_cache, activation_cache = feature_intervention_hook_output
@@ -875,7 +817,6 @@ class ReplacementModel(TransformerBridge):
                 apply_activation_function=apply_activation_function,
                 sparse=sparse,
                 using_past_kv_cache=True,
-                return_activations=return_activations,
             )
         )
 
@@ -888,7 +829,7 @@ class ReplacementModel(TransformerBridge):
         for name, hook in hooks:
             self.add_hook(name, hook)
 
-        self.add_hook("unembed.hook_out", clear_and_add_hooks)
+        self.add_hook("unembed.hook_post", clear_and_add_hooks)
 
         generation: str = self.generate(inputs, **kwargs)  # type:ignore
         self.reset_hooks()
@@ -898,141 +839,13 @@ class ReplacementModel(TransformerBridge):
             [torch.cat(acts, dim=0) for acts in open_ended_activations],  # type:ignore
             dim=0,
         )
-        if return_activations:
-            activation_cache = torch.stack(activation_cache)
-            if open_ended_activations and any(acts for acts in open_ended_activations):
-                open_ended_activations = torch.stack(
-                    [torch.cat(acts, dim=0) for acts in open_ended_activations],  # type:ignore
-                    dim=0,
-                )
-
-                activations = torch.cat((activation_cache, open_ended_activations), dim=1)
-            else:
-                activations = activation_cache
-            if sparse:
-                activations = activations.coalesce()
-        else:
-            activations = None
+        activation_cache = torch.stack(activation_cache)
+        activations = torch.cat((activation_cache, open_ended_activations), dim=1)
+        if sparse:
+            activations = activations.coalesce()
 
         return generation, logits, activations
 
     def __del__(self):
         # Prevent memory leaks
-        self.reset_hooks()  # We don't need "include_permanent=True" anymore?
-
-
-def _rewrite_hook(hook_name: str) -> str:
-    if hook_name == "hook_resid_mid":
-        return "ln2.hook_in"
-    if hook_name == "hook_mlp_out":
-        return "mlp.hook_out"
-    if hook_name == "hook_mlp_out.hook_out_grad":
-        return "mlp.hook_out.hook_out_grad"
-    return hook_name
-
-
-def _get_final_logit_softcapping(cfg: TransformerBridgeConfig) -> float | None:
-    if hasattr(cfg, "final_logit_softcapping"):
-        return cfg.final_logit_softcapping  # type: ignore
-    return None
-
-
-# copied from transformer_lens.model_bridge.sources.transformers.boot, but modified to return the hf model
-def _boot_model_components(
-    model_name: str,
-    hf_config_overrides: dict | None = None,
-    device: str | torch.device | None = None,
-    dtype: torch.dtype = torch.float32,
-    tokenizer: PreTrainedTokenizerBase | None = None,
-) -> tuple[PreTrainedModel, ArchitectureAdapter, PreTrainedTokenizerBase]:
-    """Boot a model from HuggingFace.
-
-    Args:
-        model_name: The name of the model to load.
-        hf_config_overrides: Optional overrides applied to the HuggingFace config before model load.
-        device: The device to use. If None, will be determined automatically.
-        dtype: The dtype to use for the model.
-        tokenizer: Optional pre-initialized tokenizer to use; if not provided one will be created.
-
-    Returns:
-        The bridge to the loaded model.
-    """
-    # Lazy import to avoid circular import
-    from transformer_lens.factories.architecture_adapter_factory import (
-        ArchitectureAdapterFactory,
-    )
-
-    # MODEL_ALIASES is a dict of {official_name: [alias1, alias2, ...]}
-    # Check if model_name that the user passed is an alias, and if so, use the official name
-    for official_name, aliases in MODEL_ALIASES.items():
-        if model_name in aliases:
-            logging.warning(
-                f"DEPRECATED: You are using a deprecated, model_name alias '{model_name}'. TransformerLens will now load the official transformers model name, '{official_name}' instead.\n Please update your code to use the official name by changing model_name from '{model_name}' to '{official_name}'.\nSince TransformerLens v3, all model names should be the official transformers model names.\nThe aliases will be removed in the next version of TransformerLens, so please do the update now."
-            )
-            model_name = official_name
-            break
-
-    hf_config = AutoConfig.from_pretrained(model_name, output_attentions=True)
-
-    # Apply config variables to hf_config before selecting adapter
-    if hf_config_overrides:
-        hf_config.__dict__.update(hf_config_overrides)
-
-    # Apply HuggingFace to TransformerLens config mapping
-    tl_config = map_default_transformer_lens_config(hf_config)
-
-    architecture = determine_architecture_from_hf_config(hf_config)
-
-    # Convert to TransformerBridgeConfig with unified architecture
-    bridge_config = TransformerBridgeConfig.from_dict(tl_config.__dict__)
-    bridge_config.architecture = architecture
-    bridge_config.model_name = model_name  # Set the actual model name instead of default "custom"
-    bridge_config.dtype = dtype  # Set the dtype from the boot parameter
-
-    adapter = ArchitectureAdapterFactory.select_architecture_adapter(bridge_config)
-
-    # No device specified by user, use the best available device for the current system
-    if device is None:
-        device = get_device()
-
-    # Add device information to the config
-    adapter.cfg.device = str(device)
-
-    # Determine the correct HuggingFace model class based on architecture
-    model_class = get_hf_model_class_for_architecture(architecture)
-
-    # Load the model from HuggingFace using the appropriate model class
-    hf_model = model_class.from_pretrained(
-        model_name,
-        config=hf_config,
-        torch_dtype=dtype,
-    )
-
-    # Move model to device
-    if device is not None:
-        hf_model = hf_model.to(device)  # type: ignore
-
-    # Load the tokenizer
-    tokenizer = tokenizer
-    default_padding_side = getattr(adapter.cfg, "default_padding_side", None)
-    use_fast = getattr(adapter.cfg, "use_fast", True)
-
-    if tokenizer is not None:
-        tokenizer = setup_tokenizer(tokenizer, default_padding_side=default_padding_side)
-    else:
-        huggingface_token = os.environ.get("HF_TOKEN", "")
-        tokenizer = setup_tokenizer(
-            AutoTokenizer.from_pretrained(
-                model_name,
-                add_bos_token=True,
-                use_fast=use_fast,
-                token=huggingface_token if len(huggingface_token) > 0 else None,
-            ),
-            default_padding_side=default_padding_side,
-        )
-
-    # Set tokenizer_prepends_bos configuration
-    if tokenizer is not None:
-        adapter.cfg.tokenizer_prepends_bos = len(tokenizer.encode("")) > 0
-
-    return hf_model, adapter, tokenizer
+        self.reset_hooks(including_permanent=True)
