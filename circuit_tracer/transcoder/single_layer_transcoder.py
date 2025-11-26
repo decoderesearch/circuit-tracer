@@ -8,7 +8,7 @@ from huggingface_hub import hf_hub_download
 from safetensors import safe_open
 from torch import nn
 
-from circuit_tracer.transcoder.activation_functions import JumpReLU
+from circuit_tracer.transcoder.activation_functions import JumpReLU, TopK
 from circuit_tracer.utils import get_default_device
 
 
@@ -419,6 +419,47 @@ def load_relu_transcoder(
     return transcoder.to(dtype)
 
 
+def load_topk_transcoder(
+    path: str,
+    layer: int,
+    k: int,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+    lazy_encoder: bool = True,
+    lazy_decoder: bool = True,
+):
+    if device is None:
+        device = get_default_device()
+
+    param_dict = {}
+    with safe_open(path, framework="pt", device=device.type) as f:
+        for k_key in f.keys():
+            if lazy_encoder and k_key == "W_enc":
+                continue
+            if lazy_decoder and k_key == "W_dec":
+                continue
+            param_dict[k_key] = f.get_tensor(k_key)
+
+    d_sae = param_dict["b_enc"].shape[0]
+    d_model = param_dict["b_dec"].shape[0]
+
+    assert param_dict.get("log_thresholds") is None
+    activation_function = TopK(k)
+    with torch.device("meta"):
+        transcoder = SingleLayerTranscoder(
+            d_model,
+            d_sae,
+            activation_function,
+            layer,
+            skip_connection=param_dict.get("W_skip") is not None,
+            transcoder_path=path,
+            lazy_encoder=lazy_encoder,
+            lazy_decoder=lazy_decoder,
+        )
+    transcoder.load_state_dict(param_dict, assign=True)
+    return transcoder.to(dtype)
+
+
 def load_transcoder_set(
     transcoder_paths: dict,
     scan: str,
@@ -427,6 +468,8 @@ def load_transcoder_set(
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
     gemma_scope: bool = False,
+    topk: bool = False,
+    k: int = 64,
     lazy_encoder: bool = True,
     lazy_decoder: bool = True,
 ) -> TranscoderSet:
@@ -442,6 +485,8 @@ def load_transcoder_set(
         device (torch.device | None, optional): Device to load to
         dtype (torch.dtype | None, optional): Data type to use
         gemma_scope: Whether to use gemma scope loader
+        topk: Whether to use TopK loader
+        k: K value for TopK activation function
         lazy_encoder: Whether to use lazy loading for encoder weights
         lazy_decoder: Whether to use lazy loading for decoder weights
 
@@ -450,16 +495,33 @@ def load_transcoder_set(
     """
 
     transcoders = {}
-    load_fn = load_gemma_scope_transcoder if gemma_scope else load_relu_transcoder
+    if gemma_scope:
+        load_fn = load_gemma_scope_transcoder
+    elif topk:
+        load_fn = load_topk_transcoder
+    else:
+        load_fn = load_relu_transcoder
+
     for layer in range(len(transcoder_paths)):
-        transcoders[layer] = load_fn(
-            transcoder_paths[layer],
-            layer,
-            device=device,
-            dtype=dtype,
-            lazy_encoder=lazy_encoder,
-            lazy_decoder=lazy_decoder,
-        )
+        if topk:
+            transcoders[layer] = load_fn(
+                transcoder_paths[layer],
+                layer,
+                k=k,
+                device=device,
+                dtype=dtype,
+                lazy_encoder=lazy_encoder,
+                lazy_decoder=lazy_decoder,
+            )
+        else:
+            transcoders[layer] = load_fn(
+                transcoder_paths[layer],
+                layer,
+                device=device,
+                dtype=dtype,
+                lazy_encoder=lazy_encoder,
+                lazy_decoder=lazy_decoder,
+            )
     # we don't know how many layers the model has, but we need all layers from 0 to max covered
     assert set(transcoders.keys()) == set(range(max(transcoders.keys()) + 1)), (
         f"Each layer should have a transcoder, but got transcoders for layers "
