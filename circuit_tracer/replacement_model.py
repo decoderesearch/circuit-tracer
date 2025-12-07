@@ -111,9 +111,7 @@ class ReplacementModel(TransformerBridge):
             **kwargs,
         )
         model.enable_compatibility_mode(
-            fold_ln=False,
-            center_writing_weights=False,
-            center_unembed=False,
+            no_processing=True,
         )
 
         model._configure_replacement_model(transcoders)
