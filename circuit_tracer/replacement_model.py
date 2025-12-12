@@ -881,10 +881,6 @@ class ReplacementModel(HookedTransformer):
         self.reset_hooks()
 
         logits = torch.cat((logit_cache[0], *open_ended_logits), dim=1)  # type:ignore
-        open_ended_activations = torch.stack(
-            [torch.cat(acts, dim=0) for acts in open_ended_activations],  # type:ignore
-            dim=0,
-        )
         if return_activations:
             activation_cache = torch.stack(activation_cache)
             if open_ended_activations and any(acts for acts in open_ended_activations):
