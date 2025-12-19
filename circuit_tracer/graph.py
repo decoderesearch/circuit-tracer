@@ -1,7 +1,12 @@
 from typing import NamedTuple
 
 import torch
-from transformer_lens import HookedTransformerConfig
+
+from circuit_tracer.utils.tl_nnsight_mapping import (
+    convert_nnsight_config_to_transformerlens,
+    UnifiedConfig,
+)
+from circuit_tracer.utils import get_default_device
 
 
 class Graph:
@@ -13,7 +18,7 @@ class Graph:
     selected_features: torch.Tensor
     activation_values: torch.Tensor
     logit_probabilities: torch.Tensor
-    cfg: HookedTransformerConfig
+    cfg: UnifiedConfig
     scan: str | list[str] | None
 
     def __init__(
@@ -22,7 +27,7 @@ class Graph:
         input_tokens: torch.Tensor,
         active_features: torch.Tensor,
         adjacency_matrix: torch.Tensor,
-        cfg: HookedTransformerConfig,
+        cfg,
         logit_tokens: torch.Tensor,
         logit_probabilities: torch.Tensor,
         selected_features: torch.Tensor,
@@ -52,13 +57,13 @@ class Graph:
             logit_tokens (List[str]): The logit tokens attributed from.
             logit_probabilities (torch.Tensor): The probabilities of each logit token, given
                 the input string.
-            scan (Optional[Union[str,List[str]]], optional): The identifier of the
+            scan (Union[str,List[str]] | None, optional): The identifier of the
                 transcoders used in the graph. Without a scan, the graph cannot be uploaded
                 (since we won't know what transcoders were used). Defaults to None
         """
         self.input_string = input_string
         self.adjacency_matrix = adjacency_matrix
-        self.cfg = cfg
+        self.cfg = convert_nnsight_config_to_transformerlens(cfg)
         self.n_pos = len(input_tokens)
         self.active_features = active_features
         self.logit_tokens = logit_tokens
@@ -275,7 +280,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     n_tokens = len(graph.input_tokens)
     n_features = len(graph.selected_features)
     error_start = n_features
-    error_end = error_start + n_tokens * graph.cfg.n_layers
+    error_end = error_start + n_tokens * graph.cfg.n_layers  # type: ignore
     token_end = error_end + n_tokens
 
     logit_weights = torch.zeros(
@@ -295,3 +300,32 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     completeness_score = (non_error_fractions * output_influence).sum() / output_influence.sum()
 
     return replacement_score.item(), completeness_score.item()
+
+
+def compute_partial_influences(
+    edge_matrix: torch.Tensor,
+    logit_p: torch.Tensor,
+    row_to_node_index: torch.Tensor,
+    max_iter: int = 128,
+    device=None,
+):
+    """Compute partial influences using power iteration method."""
+    device = device or get_default_device()
+
+    normalized_matrix = torch.empty_like(edge_matrix, device=device).copy_(edge_matrix)
+    normalized_matrix = normalized_matrix.abs_()
+    normalized_matrix /= normalized_matrix.sum(dim=1, keepdim=True).clamp(min=1e-8)
+
+    influences = torch.zeros(edge_matrix.shape[1], device=normalized_matrix.device)
+    prod = torch.zeros(edge_matrix.shape[1], device=normalized_matrix.device)
+    prod[-len(logit_p) :] = logit_p
+
+    for _ in range(max_iter):
+        prod = prod[row_to_node_index] @ normalized_matrix
+        if not prod.any():
+            break
+        influences += prod
+    else:
+        raise RuntimeError("Failed to converge")
+
+    return influences

@@ -2,19 +2,19 @@ import logging
 import os
 import time
 
-
 import torch
 from transformers import AutoTokenizer
 
 from circuit_tracer.frontend.graph_models import Metadata, Model, Node, QParams
 from circuit_tracer.frontend.utils import add_graph_metadata
-from circuit_tracer.graph import Graph, prune_graph
 
 logger = logging.getLogger(__name__)
 
 
-def load_graph_data(file_path) -> Graph:
+def load_graph_data(file_path):
     """Load graph data from a PyTorch file."""
+    from circuit_tracer.graph import Graph
+
     start_time = time.time()
     graph = Graph.from_pt(file_path)
     time_ms = (time.time() - start_time) * 1000
@@ -22,7 +22,7 @@ def load_graph_data(file_path) -> Graph:
     return graph
 
 
-def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
+def create_nodes(graph, node_mask, tokenizer, cumulative_scores):
     """Create all nodes for the graph."""
     start_time = time.time()
 
@@ -30,7 +30,7 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
 
     n_features = len(graph.selected_features)
     layers = graph.cfg.n_layers
-    error_end_idx = n_features + graph.n_pos * layers
+    error_end_idx = n_features + graph.n_pos * layers  # type: ignore
     token_end_idx = error_end_idx + len(graph.input_tokens)
 
     for node_idx in node_mask.nonzero().squeeze().tolist():
@@ -68,7 +68,7 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
     return nodes
 
 
-def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
+def create_used_nodes_and_edges(graph, nodes, edge_mask):
     """Filter to only used nodes and create edges."""
     start_time = time.time()
     edges = edge_mask.numpy()
@@ -102,7 +102,7 @@ def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
     return used_nodes, used_edges
 
 
-def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer):
+def build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer):
     """Build the full model object."""
     start_time = time.time()
 
@@ -145,13 +145,15 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold
 
 
 def create_graph_files(
-    graph_or_path: Graph | str,
+    graph_or_path,
     slug: str,
     output_path,
     scan=None,
     node_threshold=0.8,
     edge_threshold=0.98,
 ):
+    from circuit_tracer.graph import Graph, prune_graph
+
     total_start_time = time.time()
 
     if isinstance(graph_or_path, Graph):
