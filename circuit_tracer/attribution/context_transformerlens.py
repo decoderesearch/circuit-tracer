@@ -5,8 +5,7 @@ Attribution context for managing hooks during attribution computation.
 import contextlib
 import weakref
 from functools import partial
-from typing import TYPE_CHECKING
-from collections.abc import Callable
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import torch
@@ -14,7 +13,9 @@ from einops import einsum
 from transformer_lens.hook_points import HookPoint
 
 if TYPE_CHECKING:
-    from circuit_tracer.replacement_model import ReplacementModel
+    from circuit_tracer.replacement_model.replacement_model_transformerlens import (
+        TransformerLensReplacementModel,
+    )
 
 
 class AttributionContext:
@@ -44,7 +45,7 @@ class AttributionContext:
 
     def __init__(
         self,
-        activation_matrix: torch.Tensor,
+        activation_matrix: torch.sparse.Tensor,  # type: ignore
         error_vectors: torch.Tensor,
         token_vectors: torch.Tensor,
         decoder_vecs: torch.Tensor,
@@ -156,7 +157,7 @@ class AttributionContext:
         return feature_hooks + error_hooks + token_hook
 
     @contextlib.contextmanager
-    def install_hooks(self, model: "ReplacementModel"):
+    def install_hooks(self, model: "TransformerLensReplacementModel"):
         """Context manager instruments the hooks for the forward and backward passes."""
         with model.hooks(
             fwd_hooks=self._caching_hooks(model.feature_input_hook),  # type: ignore
@@ -186,8 +187,7 @@ class AttributionContext:
             torch.Tensor: ``(batch, row_size)`` matrix - one row per node.
         """
 
-        assert self._resid_activations[0] is not None, "Residual activations are not cached"
-        batch_size = self._resid_activations[0].shape[0]
+        batch_size = self._resid_activations[0].shape[0]  # type: ignore
         self._batch_buffer = torch.zeros(
             self._row_size,
             batch_size,
@@ -216,9 +216,7 @@ class AttributionContext:
                 pos_indices=positions[mask],
                 values=inject_values[mask],
             )
-            resid_activations = self._resid_activations[int(layer)]
-            assert resid_activations is not None, "Residual activations are not cached"
-            handles.append(resid_activations.register_hook(fn))
+            handles.append(self._resid_activations[int(layer)].register_hook(fn))  # type: ignore
 
         try:
             last_layer = max(layers_in_batch)

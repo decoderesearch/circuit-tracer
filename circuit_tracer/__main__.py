@@ -89,6 +89,13 @@ def main():
         default=True,
         help="Enable lazy loading for decoder weights to save memory (default: True).",
     )
+    attr_parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["transformerlens", "nnsight"],
+        default="transformerlens",
+        help="Backend to use for the replacement model (default: transformerlens).",
+    )
 
     # Arguments for graph creation
     attr_parser.add_argument(
@@ -218,13 +225,13 @@ def run_attribution(args, parser):
         parser.error("--model must be specified when not provided in transcoder config")
 
     model_instance = ReplacementModel.from_pretrained_and_transcoders(
-        args.model, transcoder, dtype=dtype
+        args.model, transcoder, dtype=dtype, backend=args.backend
     )
 
     logging.info("Running attribution...")
     graph = attribute(
         prompt=args.prompt,
-        model=model_instance,
+        model=model_instance,  # type:ignore
         max_n_logits=args.max_n_logits,
         desired_logit_prob=args.desired_logit_prob,
         batch_size=args.batch_size,
