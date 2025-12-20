@@ -36,6 +36,12 @@ We finally provide demos that dig deeper into specific, pre-computed and pre-ann
 
 We also provide a number of annotated attribution graphs for both models, which can be found at the top of their two demo notebooks.
 
+## Choosing a Backend
+
+By default, `circuit-tracer` creates a `ReplacementModel` that inherits from the `TransformerLens` `HookedTransformer` class. However, `TransformerLens` does not support all HuggingFace models; it only supports those implemented in `TransformerLens`. 
+
+Creating a `ReplacementModel` with `backend='nnsight'` will create an `nnsight`-backed `ReplacementModel` that inherits from its `LanguageModel` class; this supports most HuggingFace models. That is, you can create an `nnsight` `ReplacementModel` using `ReplacementModel.from_pretrained(model_name, backend='nnsight')`. Note, however, that the `nnsight` backend is still experimental: it is slower and less memory-efficient, and may not provide all of the functionality of the `TransformerLens` version.
+
 ## Command-Line Interface
 
 The unified CLI performs the complete 3-step process for finding and visualizing circuits:

@@ -95,3 +95,7 @@ class TestHfUtilsDownload(unittest.TestCase):
 
         # download is not called, as the repo is not found
         mock_download.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
