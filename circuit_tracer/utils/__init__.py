@@ -1,6 +1,5 @@
 import torch
-
-from circuit_tracer.utils.create_graph_files import create_graph_files
+from circuit_tracer.utils.create_graph_files import create_graph_files as create_graph_files
 
 
 def get_default_device() -> torch.device:
