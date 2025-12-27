@@ -85,6 +85,8 @@ def load_transcoders(
 
         transcoder_paths = resolve_transcoder_paths(config)
         is_gemma_scope = "gemma-scope" in config.get("repo_id", "")
+        is_topk = "topk" in config.get("repo_id", "").lower() or config.get("activation", "").lower() == "topk"
+        k = config.get("k", 128)
 
         return load_transcoder_set(
             transcoder_paths,
@@ -92,6 +94,8 @@ def load_transcoders(
             feature_input_hook=config["feature_input_hook"],
             feature_output_hook=config["feature_output_hook"],
             gemma_scope=is_gemma_scope,
+            topk=is_topk,
+            k=k,
             dtype=dtype,
             device=device,
             lazy_encoder=lazy_encoder,
