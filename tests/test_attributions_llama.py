@@ -2,16 +2,19 @@ import numpy as np
 import pytest
 import torch
 import torch.nn as nn
-from transformer_lens import HookedTransformerConfig
-
 from circuit_tracer import ReplacementModel, attribute
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import TopK
 from circuit_tracer.utils import get_default_device
-from tests.test_attributions_gemma import verify_feature_edges, verify_token_and_error_edges
+
+from .test_attributions_gemma import (
+    verify_feature_edges,
+    verify_token_and_error_edges,
+)
+from transformer_lens.config import TransformerBridgeConfig
 
 
-def load_dummy_llama_model(cfg: HookedTransformerConfig, k: int):
+def load_dummy_llama_model(cfg: TransformerBridgeConfig, k: int):
     transcoders = {
         layer_idx: SingleLayerTranscoder(
             cfg.d_model, cfg.d_model * 4, TopK(k), layer_idx, skip_connection=True
@@ -106,7 +109,7 @@ def verify_small_llama_model(s: torch.Tensor):
         "NTK_by_parts_factor": 32.0,
     }
 
-    cfg = HookedTransformerConfig.from_dict(llama_small_cfg)
+    cfg = TransformerBridgeConfig.from_dict(llama_small_cfg)
     k = 4
     model = load_dummy_llama_model(cfg, k)
     graph = attribute(s, model)
@@ -184,7 +187,7 @@ def verify_large_llama_model(s: torch.Tensor):
         "NTK_by_parts_high_freq_factor": 4.0,
         "NTK_by_parts_factor": 32.0,
     }
-    cfg = HookedTransformerConfig.from_dict(llama_large_cfg)
+    cfg = TransformerBridgeConfig.from_dict(llama_large_cfg)
     k = 16
     model = load_dummy_llama_model(cfg, k)
     graph = attribute(s, model)

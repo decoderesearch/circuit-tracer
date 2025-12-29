@@ -3,11 +3,8 @@ import tempfile
 
 import pytest
 import torch
+from circuit_tracer.transcoder.cross_layer_transcoder import load_clt
 from safetensors.torch import save_file
-
-from circuit_tracer.transcoder.cross_layer_transcoder import (
-    load_clt,
-)
 
 
 @pytest.fixture

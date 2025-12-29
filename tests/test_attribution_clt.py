@@ -1,14 +1,14 @@
 import torch
 import torch.nn as nn
-from transformer_lens import HookedTransformerConfig
-from tqdm import tqdm
-
-from circuit_tracer import attribute, Graph, ReplacementModel
+from circuit_tracer import Graph, ReplacementModel, attribute
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
+from tqdm import tqdm
+
+from transformer_lens.config import TransformerBridgeConfig
 
 
-def create_clt_model(cfg: HookedTransformerConfig):
+def create_clt_model(cfg: TransformerBridgeConfig):
     """Create a CLT and ReplacementModel with random weights."""
     # Create CLT with 4x expansion
     clt = CrossLayerTranscoder(
@@ -116,7 +116,7 @@ def verify_feature_edges(
 def test_clt_attribution():
     """Test CLT attribution and intervention mechanism."""
     # Minimal config
-    cfg = HookedTransformerConfig.from_dict(
+    cfg = TransformerBridgeConfig.from_dict(
         {
             "n_layers": 4,
             "d_model": 8,

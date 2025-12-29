@@ -3,10 +3,9 @@
 import unittest
 from unittest import mock
 
-from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
-
 # Import the function and exceptions you need to test or mock
 from circuit_tracer.utils.hf_utils import download_hf_uris
+from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
 
 # A dummy URI for all tests
 TEST_URI = "hf://test-org/test-repo/model.bin"

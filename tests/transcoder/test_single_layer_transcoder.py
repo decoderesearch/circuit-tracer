@@ -3,12 +3,11 @@ import tempfile
 
 import pytest
 import torch
-from safetensors.torch import save_file
-
 from circuit_tracer.transcoder.single_layer_transcoder import (
     load_relu_transcoder,
     load_transcoder_set,
 )
+from safetensors.torch import save_file
 
 
 @pytest.fixture
