@@ -35,8 +35,11 @@ class jumprelu(torch.autograd.Function):
 
 
 class JumpReLU(torch.nn.Module):
-    def __init__(self, threshold: torch.Tensor, bandwidth: float = 2) -> None:
+    def __init__(self, threshold: float | torch.Tensor, bandwidth: float = 2) -> None:
         super().__init__()
+        if not isinstance(threshold, torch.Tensor):
+            threshold = torch.tensor(threshold)
+
         self.threshold = nn.Parameter(threshold)
         self.bandwidth = bandwidth
 

@@ -43,9 +43,10 @@ window.initFeatureExamples = function({containerSel, showLogits=true, showExampl
   }
 
   function hfUrl(scan, path) {
-    const repoId = scan.split('@')[0]
-    const revision = scan.split('@')[1] || 'main'
-    return `https://huggingface.co/${repoId}/resolve/${revision}/features/${path}`
+    const [repoId, rest] = scan.split('//')
+    const [filePath, revision] = rest ? rest.split('@') : [null, scan.split('@')[1]]
+    const prefix = filePath ? `${filePath}/` : ''
+    return `https://huggingface.co/${repoId.split('@')[0]}/resolve/${revision || 'main'}/${prefix}features/${path}`
   }
 
   function indexFileExists(scan) {
