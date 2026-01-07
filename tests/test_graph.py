@@ -1,9 +1,19 @@
+import gc
+
 import numpy as np
+import pytest
 import torch
 from transformer_lens import HookedTransformerConfig
 
 from circuit_tracer.graph import Graph, compute_edge_influence, compute_node_influence
 from circuit_tracer.utils import get_default_device
+
+
+@pytest.fixture(autouse=True)
+def cleanup_cuda():
+    yield
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 def test_small_graph():
