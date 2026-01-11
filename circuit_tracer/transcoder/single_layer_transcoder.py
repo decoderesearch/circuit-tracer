@@ -124,9 +124,15 @@ class SingleLayerTranscoder(nn.Module):
             return pre_acts
         return self.activation_function(pre_acts)
 
-    def decode(self, acts):
+    def decode(self, acts, input_acts: torch.Tensor | None = None):
         W_dec = self.W_dec
-        return acts @ W_dec + self.b_dec
+        reconstruction = acts @ W_dec + self.b_dec
+        if self.W_skip is not None:
+            assert input_acts is not None, (
+                "Transcoder has skip connection but no input_acts were provided"
+            )
+            reconstruction = reconstruction + self.compute_skip(input_acts)
+        return reconstruction
 
     def compute_skip(self, input_acts):
         if self.W_skip is not None:
@@ -136,13 +142,9 @@ class SingleLayerTranscoder(nn.Module):
 
     def forward(self, input_acts):
         transcoder_acts = self.encode(input_acts)
-        decoded = self.decode(transcoder_acts)
-        decoded = decoded.detach()
-        decoded.requires_grad = True
-
-        if self.W_skip is not None:
-            skip = self.compute_skip(input_acts)
-            decoded = decoded + skip
+        decoded = self.decode(transcoder_acts, input_acts)
+        # decoded = decoded.detach()
+        # decoded.requires_grad = True
 
         return decoded
 
@@ -169,7 +171,7 @@ class SingleLayerTranscoder(nn.Module):
 
         return sparse_acts, active_encoders
 
-    def decode_sparse(self, sparse_acts):
+    def decode_sparse(self, sparse_acts, input_acts: torch.Tensor | None = None):
         """Decode sparse activations and return reconstruction with scaled decoder vectors.
 
         Returns:
@@ -189,6 +191,11 @@ class SingleLayerTranscoder(nn.Module):
             n_pos, self.d_model, device=sparse_acts.device, dtype=sparse_acts.dtype
         )
         reconstruction = reconstruction.index_add_(0, pos_idx, scaled_decoders)
+        if self.W_skip is not None:
+            assert input_acts is not None, (
+                "Transcoder has skip connection but no input_acts were provided"
+            )
+            reconstruction = reconstruction + self.compute_skip(input_acts)
         reconstruction = reconstruction + self.b_dec
 
         return reconstruction, scaled_decoders
@@ -319,9 +326,12 @@ class TranscoderSet(nn.Module):
             encoder_mapping,
         )
 
-    def decode(self, acts):
+    def decode(self, acts, input_acts: torch.Tensor | None):
         return torch.stack(
-            [transcoder.decode(acts[i]) for i, transcoder in enumerate(self.transcoders)],  # type: ignore
+            [
+                transcoder.decode(acts[i], None if input_acts is None else input_acts[i])
+                for i, transcoder in enumerate[SingleLayerTranscoder](self.transcoders)  # type: ignore
+            ],
             dim=0,
         )
 
@@ -349,11 +359,13 @@ class TranscoderSet(nn.Module):
         decoder_vectors = []
         sparse_acts_list = []
 
-        for layer, transcoder in enumerate(self.transcoders):
-            sparse_acts, active_encoders = transcoder.encode_sparse(  # type: ignore
+        for layer, transcoder in enumerate[SingleLayerTranscoder](self.transcoders):  # type: ignore
+            sparse_acts, active_encoders = transcoder.encode_sparse(
                 mlp_inputs[layer], zero_positions=zero_positions
             )
-            reconstruction[layer], active_decoders = transcoder.decode_sparse(sparse_acts)  # type: ignore
+            reconstruction[layer], active_decoders = transcoder.decode_sparse(
+                sparse_acts, mlp_inputs[layer]
+            )
             encoder_vectors.append(active_encoders)
             decoder_vectors.append(active_decoders)
             sparse_acts_list.append(sparse_acts)

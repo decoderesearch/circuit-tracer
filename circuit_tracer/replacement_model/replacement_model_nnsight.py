@@ -541,7 +541,7 @@ class NNSightReplacementModel(LanguageModel):
         # Compute error vectors
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
-        error_vectors[:, 0] = 0
+        error_vectors[:, zero_positions] = 0
         token_vectors = self.embed_weight[  # type: ignore
             tokens
         ].detach()  # (n_pos, d_model)  # type: ignore
