@@ -22,7 +22,7 @@ def cleanup_cuda():
 def create_test_clt_files():
     """Create temporary CLT safetensors files for testing."""
 
-    def _create_files(n_layers=4, d_model=128, d_transcoder=512):
+    def _create_files(n_layers=4, d_model=128, d_transcoder=512, skip_connection=False):
         tmpdir = tempfile.mkdtemp()
 
         # Create encoder and decoder files for each layer
@@ -41,6 +41,11 @@ def create_test_clt_files():
             dec_path = os.path.join(tmpdir, f"W_dec_{i}.safetensors")
             save_file(dec_dict, dec_path)
 
+        if skip_connection:
+            skip_dict = {"W_skip": torch.randn(d_model, d_model)}
+            skip_path = os.path.join(tmpdir, "W_skip.safetensors")
+            save_file(skip_dict, skip_path)
+
         return tmpdir
 
     return _create_files
@@ -49,9 +54,10 @@ def create_test_clt_files():
 # === Attribution Tests ===
 
 
-def test_compute_attribution_components(create_test_clt_files):
+@pytest.mark.parametrize("skip_connection", [False, True])
+def test_compute_attribution_components(create_test_clt_files, skip_connection):
     """Test the main attribution functionality of CLT."""
-    clt_path = create_test_clt_files()
+    clt_path = create_test_clt_files(skip_connection=skip_connection)
     clt = load_clt(
         clt_path,
         device=torch.device("cpu"),
@@ -64,7 +70,7 @@ def test_compute_attribution_components(create_test_clt_files):
     inputs = torch.randn(clt.n_layers, n_pos, clt.d_model, dtype=clt.b_enc.dtype)
 
     # Compute attribution components
-    components = clt.compute_attribution_components(inputs)
+    components = clt.compute_attribution_components(inputs, zero_positions=slice(0, 1))
 
     # Verify all required components are present
     assert "activation_matrix" in components
@@ -79,9 +85,10 @@ def test_compute_attribution_components(create_test_clt_files):
     assert act_matrix.is_sparse
     assert act_matrix.shape == (clt.n_layers, n_pos, clt.d_transcoder)
 
-    # Check reconstruction
+    # Check reconstruction (only positions 1 and beyond)
     reconstruction = components["reconstruction"]
     assert reconstruction.shape == (clt.n_layers, n_pos, clt.d_model)
+    assert torch.allclose(reconstruction[:, 1:], clt(inputs)[:, 1:])
 
     # Check encoder/decoder vectors have consistent counts
     n_active_encoders = act_matrix._nnz()
@@ -93,7 +100,7 @@ def test_compute_attribution_components(create_test_clt_files):
 
     # Check decoder locations
     decoder_locs = components["decoder_locations"]
-    assert decoder_locs.shape[0] == 2  # layer and position indices
+    assert decoder_locs.shape[0] == 2
 
 
 def test_encode_sparse_with_lazy_encoder(create_test_clt_files):

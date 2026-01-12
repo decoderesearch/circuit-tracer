@@ -303,7 +303,7 @@ class NNSightReplacementModel(LanguageModel):
             gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
             overlap = 0
             if gemma_3_it:
-                input_ids = self.input.squeeze(0)
+                input_ids = self.input
                 ignore_prefix = torch.tensor(
                     [2, 105, 2364, 107], dtype=input_ids.dtype, device=input_ids.device
                 )
@@ -541,7 +541,7 @@ class NNSightReplacementModel(LanguageModel):
         # Compute error vectors
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
-        error_vectors[:, 0] = 0
+        error_vectors[:, zero_positions] = 0
         token_vectors = self.embed_weight[  # type: ignore
             tokens
         ].detach()  # (n_pos, d_model)  # type: ignore

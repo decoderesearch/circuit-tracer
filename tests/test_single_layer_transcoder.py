@@ -23,7 +23,7 @@ def cleanup_cuda():
 def create_test_transcoder_file():
     """Create a temporary transcoder safetensors file for testing."""
 
-    def _create_file(d_model=128, d_sae=512):
+    def _create_file(d_model=128, d_sae=512, skip_connection=False):
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             W_enc = torch.randn(d_sae, d_model)
             W_dec = torch.randn(d_sae, d_model)
@@ -36,6 +36,9 @@ def create_test_transcoder_file():
                 "b_enc": b_enc,
                 "b_dec": b_dec,
             }
+
+            if skip_connection:
+                state_dict["W_skip"] = torch.randn(d_model, d_model)
 
             save_file(state_dict, f.name)
             return f.name, state_dict
@@ -58,13 +61,16 @@ def create_test_transcoder_file():
 # === Attribution Tests ===
 
 
-def test_transcoder_set_attribution_components(create_test_transcoder_file):
+@pytest.mark.parametrize("skip_connection", [False, True])
+def test_transcoder_set_attribution_components(create_test_transcoder_file, skip_connection):
     """Test compute_attribution_components functionality."""
     # Create test files for multiple layers
     n_layers = 3
     paths = {}
     for layer in range(n_layers):
-        path, _ = create_test_transcoder_file(d_model=128, d_sae=512)
+        path, _ = create_test_transcoder_file(
+            d_model=128, d_sae=512, skip_connection=skip_connection
+        )
         paths[layer] = path
 
     transcoder_set = load_transcoder_set(
@@ -74,7 +80,7 @@ def test_transcoder_set_attribution_components(create_test_transcoder_file):
         feature_output_hook="hook_mlp_out",
         device=torch.device("cpu"),
         lazy_encoder=False,
-        lazy_decoder=True,  # Test with lazy decoder
+        lazy_decoder=True,
     )
 
     # Create test MLP inputs
@@ -83,7 +89,9 @@ def test_transcoder_set_attribution_components(create_test_transcoder_file):
     mlp_inputs = torch.randn(n_layers, n_pos, d_model)
 
     # Compute attribution components
-    components = transcoder_set.compute_attribution_components(mlp_inputs)
+    components = transcoder_set.compute_attribution_components(
+        mlp_inputs, zero_positions=slice(0, 1)
+    )
 
     # Verify all required components are present
     assert "activation_matrix" in components
@@ -98,9 +106,13 @@ def test_transcoder_set_attribution_components(create_test_transcoder_file):
     assert act_matrix.is_sparse
     assert act_matrix.shape == (n_layers, n_pos, 512)
 
-    # Check reconstruction
+    # Check reconstruction (only positions 1 and beyond)
     reconstruction = components["reconstruction"]
     assert reconstruction.shape == (n_layers, n_pos, d_model)
+    for layer, transcoder in enumerate(transcoder_set.transcoders):
+        assert torch.allclose(
+            reconstruction[layer, 1:], transcoder(mlp_inputs[layer])[1:], rtol=1e-4, atol=1e-4
+        )
 
     # Check encoder/decoder vectors have matching counts
     n_active = act_matrix._nnz()
@@ -110,7 +122,7 @@ def test_transcoder_set_attribution_components(create_test_transcoder_file):
 
     # Check decoder locations
     decoder_locs = components["decoder_locations"]
-    assert decoder_locs.shape == (2, n_active)  # layer and position indices
+    assert decoder_locs.shape == (2, n_active)
 
 
 def test_sparse_encode_decode(create_test_transcoder_file):
