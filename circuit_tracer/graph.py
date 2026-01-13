@@ -1,12 +1,21 @@
 """Graph data structures for attribution results."""
 
-from typing import NamedTuple
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, NamedTuple
 import warnings
 
 import torch
-from transformer_lens import HookedTransformerConfig
 
-from circuit_tracer.attribution.targets import AttributionTargets, LogitTarget
+from circuit_tracer.utils.tl_nnsight_mapping import (
+    convert_nnsight_config_to_transformerlens,
+    UnifiedConfig,
+)
+from circuit_tracer.utils import get_default_device
+from circuit_tracer.attribution.targets import LogitTarget
+
+if TYPE_CHECKING:
+    from circuit_tracer.attribution.targets import AttributionTargets
 
 
 class Graph:
@@ -19,7 +28,7 @@ class Graph:
     activation_values: torch.Tensor
     logit_probabilities: torch.Tensor
     vocab_size: int
-    cfg: HookedTransformerConfig
+    cfg: UnifiedConfig
     scan: str | list[str] | None
     n_pos: int
 
@@ -29,7 +38,7 @@ class Graph:
         input_tokens: torch.Tensor,
         active_features: torch.Tensor,
         adjacency_matrix: torch.Tensor,
-        cfg: HookedTransformerConfig,
+        cfg,
         selected_features: torch.Tensor,
         activation_values: torch.Tensor,
         scan: str | list[str] | None = None,
@@ -101,7 +110,8 @@ class Graph:
 
         self.input_string = input_string
         self.adjacency_matrix = adjacency_matrix
-        self.cfg = cfg
+        # Convert cfg to UnifiedConfig (handles both HookedTransformerConfig and NNSight configs)
+        self.cfg = convert_nnsight_config_to_transformerlens(cfg)
         self.n_pos = len(input_tokens)
         self.active_features = active_features
         self.input_tokens = input_tokens
@@ -390,3 +400,49 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     completeness_score = (non_error_fractions * output_influence).sum() / output_influence.sum()
 
     return replacement_score.item(), completeness_score.item()
+
+
+def compute_partial_influences(
+    edge_matrix: torch.Tensor,
+    logit_p: torch.Tensor,
+    row_to_node_index: torch.Tensor,
+    max_iter: int = 128,
+    device=None,
+):
+    """Compute partial influences using power iteration method.
+
+    This function calculates the influence of each node on the output logits
+    based on the edge weights in the graph.
+
+    Args:
+        edge_matrix: The edge weight matrix.
+        logit_p: The logit probabilities.
+        row_to_node_index: Mapping from row indices to node indices.
+        max_iter: Maximum number of iterations for convergence.
+        device: Device to perform computation on.
+
+    Returns:
+        torch.Tensor: Influence values for each node.
+
+    Raises:
+        RuntimeError: If computation fails to converge within max_iter.
+    """
+    device = device or get_default_device()
+
+    normalized_matrix = torch.empty_like(edge_matrix, device=device).copy_(edge_matrix)
+    normalized_matrix = normalized_matrix.abs_()
+    normalized_matrix /= normalized_matrix.sum(dim=1, keepdim=True).clamp(min=1e-8)
+
+    influences = torch.zeros(edge_matrix.shape[1], device=normalized_matrix.device)
+    prod = torch.zeros(edge_matrix.shape[1], device=normalized_matrix.device)
+    prod[-len(logit_p) :] = logit_p
+
+    for _ in range(max_iter):
+        prod = prod[row_to_node_index] @ normalized_matrix
+        if not prod.any():
+            break
+        influences += prod
+    else:
+        raise RuntimeError("Failed to converge")
+
+    return influences
