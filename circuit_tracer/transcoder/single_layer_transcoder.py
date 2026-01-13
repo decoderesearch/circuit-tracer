@@ -1,11 +1,15 @@
 import os
+import warnings
 from collections.abc import Iterator
+from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 from safetensors import safe_open
+from safetensors.torch import save_file
 from torch import nn
 
 from circuit_tracer.transcoder.activation_functions import JumpReLU
@@ -142,12 +146,12 @@ class SingleLayerTranscoder(nn.Module):
 
         return decoded
 
-    def encode_sparse(self, input_acts, zero_first_pos: bool = True):
+    def encode_sparse(self, input_acts, zero_positions: slice = slice(0, 1)):
         """Encode and return sparse activations with active encoder vectors.
 
         Args:
             input_acts: Input activations
-            zero_first_pos: Whether to zero out position 0
+            zero_positions: slice representing the positions to zero out
 
         Returns:
             sparse_acts: Sparse tensor of activations
@@ -157,8 +161,7 @@ class SingleLayerTranscoder(nn.Module):
         pre_acts = F.linear(input_acts.to(W_enc.dtype), W_enc, self.b_enc)
         acts = self.activation_function(pre_acts)
 
-        if zero_first_pos:
-            acts[0] = 0
+        acts[zero_positions] = 0
 
         sparse_acts = acts.to_sparse()
         _, feat_idx = sparse_acts.indices()
@@ -189,6 +192,30 @@ class SingleLayerTranscoder(nn.Module):
         reconstruction = reconstruction + self.b_dec
 
         return reconstruction, scaled_decoders
+
+    def to_safetensors(self, save_path: str):
+        """Save transcoder to safetensors format compatible with lazy loading.
+
+        Saves the transcoder state dict to a single safetensors file with keys:
+        W_enc, W_dec, b_enc, b_dec, and optionally activation_function.threshold and W_skip.
+
+        Args:
+            save_path: Path to the safetensors file to save
+        """
+        state_dict = {
+            "W_enc": self.W_enc.cpu(),
+            "W_dec": self.W_dec.cpu(),
+            "b_enc": self.b_enc.cpu(),
+            "b_dec": self.b_dec.cpu(),
+        }
+
+        if isinstance(self.activation_function, JumpReLU):
+            state_dict["activation_function.threshold"] = self.activation_function.threshold.cpu()
+
+        if self.W_skip is not None:
+            state_dict["W_skip"] = self.W_skip.cpu()
+
+        save_file(state_dict, save_path)
 
 
 class TranscoderSet(nn.Module):
@@ -251,6 +278,9 @@ class TranscoderSet(nn.Module):
     def apply_activation_function(self, layer_id, features):
         return self.transcoders[layer_id].activation_function(features)  # type: ignore
 
+    def compute_skip(self, layer_id: int, inputs):
+        return self.transcoders[layer_id].compute_skip(inputs)  # type: ignore
+
     def encode(self, input_acts):
         return torch.stack(
             [transcoder.encode(input_acts[i]) for i, transcoder in enumerate(self.transcoders)],  # type: ignore
@@ -281,7 +311,13 @@ class TranscoderSet(nn.Module):
         all_scaled_decoder_vectors = torch.cat(all_scaled_decoder_vectors)
         encoder_mapping = torch.arange(features._nnz(), device=features.device)
 
-        return all_pos_idx, all_layer_idx, all_feat_idx, all_scaled_decoder_vectors, encoder_mapping
+        return (
+            all_pos_idx,
+            all_layer_idx,
+            all_feat_idx,
+            all_scaled_decoder_vectors,
+            encoder_mapping,
+        )
 
     def decode(self, acts):
         return torch.stack(
@@ -290,13 +326,13 @@ class TranscoderSet(nn.Module):
         )
 
     def compute_attribution_components(
-        self,
-        mlp_inputs: torch.Tensor,
+        self, mlp_inputs: torch.Tensor, zero_positions: slice = slice(0, 1)
     ) -> dict[str, torch.Tensor]:
         """Extract active features and their encoder/decoder vectors for attribution.
 
         Args:
             mlp_inputs: (n_layers, n_pos, d_model) tensor of MLP inputs
+            zero_positions: (slice) slice indicating which positions to zero out
 
         Returns:
             Dict containing all components needed for AttributionContext:
@@ -315,7 +351,7 @@ class TranscoderSet(nn.Module):
 
         for layer, transcoder in enumerate(self.transcoders):
             sparse_acts, active_encoders = transcoder.encode_sparse(  # type: ignore
-                mlp_inputs[layer], zero_first_pos=True
+                mlp_inputs[layer], zero_positions=zero_positions
             )
             reconstruction[layer], active_decoders = transcoder.decode_sparse(sparse_acts)  # type: ignore
             encoder_vectors.append(active_encoders)
@@ -338,6 +374,20 @@ class TranscoderSet(nn.Module):
         return self.transcoders[layer_id].encode(
             x, apply_activation_function=apply_activation_function
         )  # type: ignore
+
+    def to_safetensors(self, save_dir: str):
+        """Save all transcoders in the set to safetensors files.
+
+        Saves each transcoder as layer_{i}.safetensors in the specified directory.
+
+        Args:
+            save_dir: Directory path where the safetensors files will be saved
+        """
+        os.makedirs(save_dir, exist_ok=True)
+
+        for i, transcoder in enumerate(self.transcoders):
+            save_path = os.path.join(save_dir, f"layer_{i}.safetensors")
+            transcoder.to_safetensors(save_path)  # type: ignore
 
 
 def load_gemma_scope_transcoder(
@@ -403,7 +453,11 @@ def load_relu_transcoder(
     d_model = param_dict["b_dec"].shape[0]
 
     assert param_dict.get("log_thresholds") is None
-    activation_function = F.relu
+    activation_function = (
+        JumpReLU(param_dict["activation_function.threshold"], 0.1)
+        if "activation_function.threshold" in param_dict
+        else F.relu
+    )
     with torch.device("meta"):
         transcoder = SingleLayerTranscoder(
             d_model,
@@ -419,6 +473,73 @@ def load_relu_transcoder(
     return transcoder.to(dtype)
 
 
+def load_gemma_scope_2_transcoder(
+    path: str,
+    layer: int,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+    lazy_encoder: bool = False,
+    lazy_decoder: bool = False,
+) -> SingleLayerTranscoder:
+    """Load a SingleLayerTranscoder from a GemmaScope2 JumpReLUSAE checkpoint.
+
+    Args:
+        path: Path to the checkpoint file
+        layer: Layer index for the transcoder
+        device: Device to load to
+        dtype: Data type to use
+        lazy_encoder: Whether to use lazy loading for encoder weights (not supported for GemmaScope2 format)
+        lazy_decoder: Whether to use lazy loading for decoder weights (not supported for GemmaScope2 format)
+
+    Returns:
+        SingleLayerTranscoder: The loaded transcoder
+    """
+    if device is None:
+        device = get_default_device()
+
+    if lazy_encoder or lazy_decoder:
+        warnings.warn(
+            "Lazy loading is not supported for GemmaScope2 format due to different key naming conventions. "
+            "Setting lazy_encoder=False and lazy_decoder=False.",
+            UserWarning,
+        )
+        lazy_encoder = False
+        lazy_decoder = False
+
+    with safe_open(path, framework="pt", device=device.type) as f:
+        state_dict = {k: f.get_tensor(k) for k in f.keys()}
+
+    param_dict = {
+        "W_enc": state_dict["w_enc"].T.contiguous().to(device=device, dtype=dtype),
+        "W_dec": state_dict["w_dec"].to(device=device, dtype=dtype),
+        "b_enc": state_dict["b_enc"].to(device=device, dtype=dtype),
+        "b_dec": state_dict["b_dec"].to(device=device, dtype=dtype),
+        "activation_function.threshold": state_dict["threshold"].to(device=device, dtype=dtype),
+    }
+
+    if "affine_skip_connection" in state_dict:
+        param_dict["W_skip"] = (
+            state_dict["affine_skip_connection"].T.contiguous().to(device=device, dtype=dtype)
+        )
+
+    d_transcoder = param_dict["b_enc"].shape[0]
+    d_model = param_dict["b_dec"].shape[0]
+
+    activation_function = JumpReLU(param_dict["activation_function.threshold"], 0.1)
+
+    with torch.device("meta"):
+        transcoder = SingleLayerTranscoder(
+            d_model,
+            d_transcoder,
+            activation_function,
+            layer,
+            skip_connection="W_skip" in param_dict,
+        )
+
+    transcoder.load_state_dict(param_dict, assign=True)
+    return transcoder
+
+
 def load_transcoder_set(
     transcoder_paths: dict,
     scan: str,
@@ -426,7 +547,7 @@ def load_transcoder_set(
     feature_output_hook: str,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
-    gemma_scope: bool = False,
+    special_load_fn: Literal["gemma-scope", "gemma-scope-2", None] = None,
     lazy_encoder: bool = True,
     lazy_decoder: bool = True,
 ) -> TranscoderSet:
@@ -440,8 +561,8 @@ def load_transcoder_set(
         feature_input_hook: Hook point where features read from
         feature_output_hook: Hook point where features write to
         device (torch.device | None, optional): Device to load to
-        dtype (torch.dtype | None, optional): Data type to use
-        gemma_scope: Whether to use gemma scope loader
+        dtype (torch.dtype, optional): Data type to use
+        special_load_fn: Which special loading function to use
         lazy_encoder: Whether to use lazy loading for encoder weights
         lazy_decoder: Whether to use lazy loading for decoder weights
 
@@ -450,8 +571,16 @@ def load_transcoder_set(
     """
 
     transcoders = {}
-    load_fn = load_gemma_scope_transcoder if gemma_scope else load_relu_transcoder
     for layer in range(len(transcoder_paths)):
+        npz_format = Path(transcoder_paths[layer]).suffix == ".npz"
+
+        if special_load_fn == "gemma-scope" and npz_format:
+            load_fn = load_gemma_scope_transcoder
+        elif special_load_fn == "gemma-scope-2":
+            load_fn = load_gemma_scope_2_transcoder
+        else:
+            load_fn = load_relu_transcoder
+
         transcoders[layer] = load_fn(
             transcoder_paths[layer],
             layer,

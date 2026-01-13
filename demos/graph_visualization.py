@@ -12,10 +12,10 @@ Feature = namedtuple("Feature", ["layer", "pos", "feature_idx"])
 
 class InterventionGraph:
     prompt: str
-    ordered_nodes: list["Supernode"]
+    ordered_nodes: list[list["Supernode"]]
     nodes: dict[str, "Supernode"]
 
-    def __init__(self, ordered_nodes: list["Supernode"], prompt: str):
+    def __init__(self, ordered_nodes: list[list["Supernode"]], prompt: str):
         self.ordered_nodes = ordered_nodes
         self.prompt = prompt
         self.nodes = {}
@@ -35,7 +35,7 @@ class InterventionGraph:
                 current_node_activation = torch.tensor(
                     [current_activations[feature] for feature in node.features]
                 )
-                node.activation = (current_node_activation / node.default_activations).mean().item()
+                node.activation = (current_node_activation / node.default_activations).mean().item()  #type:ignore
             else:
                 node.activation = None
             node.intervention = None
@@ -47,7 +47,7 @@ class Supernode:
     activation: float | None
     default_activations: torch.Tensor | None
     children: list["Supernode"]
-    intervention: None
+    intervention: str | None
     replacement_node: "Supernode | None"
 
     def __init__(

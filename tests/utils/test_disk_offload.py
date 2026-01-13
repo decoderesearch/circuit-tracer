@@ -1,5 +1,7 @@
 """Tests for disk_offload module functions."""
 
+import gc
+
 import pytest
 import torch
 
@@ -11,6 +13,13 @@ from circuit_tracer.utils.disk_offload import (
     disk_offload_module,
     offload_modules,
 )
+
+
+@pytest.fixture(autouse=True)
+def cleanup_cuda():
+    yield
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 @pytest.fixture
@@ -42,6 +51,7 @@ def plt_module():
 
 @pytest.mark.parametrize("module_fixture", ["clt_module", "plt_module"])
 @pytest.mark.parametrize("explicit_device", [True, False])
+@pytest.mark.requires_disk
 def test_disk_offload_module(module_fixture, explicit_device, request):
     """Test disk offload with CLT and PLT architectures."""
     module = request.getfixturevalue(module_fixture)
@@ -148,7 +158,13 @@ def test_cpu_offload_module_cpu(clt_module):
     ],
     ids=["single_clt", "list_clt", "moduledict_clt"],
 )
-@pytest.mark.parametrize("offload_type", ["cpu", "disk"])
+@pytest.mark.parametrize(
+    "offload_type",
+    [
+        "cpu",
+        pytest.param("disk", marks=pytest.mark.requires_disk),
+    ],
+)
 def test_offload_modules(modules_factory, expected_count, offload_type):
     """Test offload_modules with various container types using CLT architecture."""
     modules = modules_factory()
@@ -178,6 +194,7 @@ def test_offload_modules(modules_factory, expected_count, offload_type):
             handle()
 
 
+@pytest.mark.requires_disk
 def test_cleanup_offload_files(clt_module):
     """Test cleanup removes offload files."""
     # Create some offload files
@@ -191,6 +208,7 @@ def test_cleanup_offload_files(clt_module):
     assert n_removed >= 1
 
 
+@pytest.mark.requires_disk
 def test_cleanup_when_no_files():
     """Test cleanup when no offload files exist."""
     # First cleanup any existing files

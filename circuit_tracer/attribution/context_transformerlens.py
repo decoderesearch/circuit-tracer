@@ -187,8 +187,7 @@ class AttributionContext:
             torch.Tensor: ``(batch, row_size)`` matrix - one row per node.
         """
 
-        assert self._resid_activations[0] is not None, "Residual activations are not cached"
-        batch_size = self._resid_activations[0].shape[0]
+        batch_size = self._resid_activations[0].shape[0]  # type: ignore
         self._batch_buffer = torch.zeros(
             self._row_size,
             batch_size,
@@ -217,9 +216,7 @@ class AttributionContext:
                 pos_indices=positions[mask],
                 values=inject_values[mask],
             )
-            resid_activations = self._resid_activations[int(layer)]
-            assert resid_activations is not None, "Residual activations are not cached"
-            handles.append(resid_activations.register_hook(fn))
+            handles.append(self._resid_activations[int(layer)].register_hook(fn))  # type: ignore
 
         try:
             last_layer = max(layers_in_batch)

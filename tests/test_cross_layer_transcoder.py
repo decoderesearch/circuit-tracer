@@ -163,7 +163,11 @@ def test_decoder_slice_access(create_test_clt_files):
     lazy_full = lazy_clt._get_decoder_vectors(layer_id)
     eager_full = eager_clt._get_decoder_vectors(layer_id)
     assert torch.allclose(lazy_full, eager_full)
-    assert lazy_full.shape == (lazy_clt.d_transcoder, lazy_clt.n_layers, lazy_clt.d_model)
+    assert lazy_full.shape == (
+        lazy_clt.d_transcoder,
+        lazy_clt.n_layers,
+        lazy_clt.d_model,
+    )
 
     # Slice access
     feat_ids = torch.tensor([10, 50, 100, 200])
