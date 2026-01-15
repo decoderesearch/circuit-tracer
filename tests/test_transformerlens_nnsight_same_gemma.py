@@ -9,6 +9,9 @@ from circuit_tracer.attribution.attribute_transformerlens import (
     attribute as attribute_transformerlens,
 )
 
+# Mark all tests in this module as requiring large GPU memory
+pytestmark = pytest.mark.high_mem
+
 
 @pytest.fixture(autouse=True)
 def cleanup_cuda():

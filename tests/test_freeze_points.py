@@ -31,7 +31,8 @@ MODEL_CONFIGS_NNSIGHT = [
     # ("google/gemma-3-1b-pt", "mwhanna/gemma-scope-2-1b-pt/clt/width_262k_l0_medium_affine"),  # This requires lazy loading
     (
         "google/gemma-3-4b-pt",
-        "mwhanna/gemma-scope-2-4b-pt/transcoder_all/width_262k_l0_small_affine",
+        # we use width_16k here instead of 262k to avoid large download not used elsewhere in the test suite
+        "mwhanna/gemma-scope-2-4b-pt/transcoder_all/width_16k_l0_small_affine",
     ),
 ]
 

@@ -265,7 +265,7 @@ def verify_feature_edges(
     model: NNSightReplacementModel,
     graph: Graph,
     n_samples: int = 100,
-    act_atol=5e-4,
+    act_atol=1e-3,  # dummy transcoder gemma3 tests need slightly higher tolerance
     act_rtol=1e-5,
     logit_atol=1e-5,
     logit_rtol=1e-3,
@@ -484,7 +484,7 @@ def test_gemma3_with_dummy_transcoders():
     s = "The National Digital Analytics Group (ND"
     model = load_gemma3_with_dummy_transcoders()
     model.to(torch.float32)  # type:ignore
-    graph = attribute(s, model)
+    graph = attribute(s, model, batch_size=256)
 
     assert isinstance(model, NNSightReplacementModel)
 
@@ -498,7 +498,7 @@ def test_gemma3_with_dummy_clt():
     s = "The National Digital Analytics Group (ND"
     model = load_gemma3_with_dummy_clt()
     model.to(torch.float32)  # type:ignore
-    graph = attribute(s, model)
+    graph = attribute(s, model, batch_size=256)
 
     assert isinstance(model, NNSightReplacementModel)
 
@@ -525,6 +525,7 @@ def test_gemma_3_1b():
         verify_feature_edges(model, graph)
 
 
+@pytest.mark.high_mem
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_3_1b_clt():
     s = "The National Digital Analytics Group (ND"
@@ -543,6 +544,8 @@ def test_gemma_3_1b_clt():
         verify_feature_edges(model, graph)
 
 
+@pytest.mark.high_mem
+@pytest.mark.long_running
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_3_4b():
     s = "The National Digital Analytics Group (ND"

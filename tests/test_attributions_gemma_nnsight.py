@@ -341,7 +341,7 @@ def test_gemma_2_2b():
     model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma", backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
 
-    graph = attribute(s, model)
+    graph = attribute(s, model, batch_size=256)
 
     print("Changing logit softcap to 0, as the logits will otherwise be off.")
     with model.zero_softcap():

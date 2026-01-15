@@ -6,6 +6,9 @@ import torch
 from circuit_tracer.replacement_model import ReplacementModel
 from circuit_tracer.attribution.attribute import attribute
 
+# Mark all tests in this module as requiring high GPU memory
+pytestmark = pytest.mark.high_mem
+
 
 @pytest.fixture(autouse=True)
 def cleanup_cuda():

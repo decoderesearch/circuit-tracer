@@ -48,6 +48,7 @@ def test_offload_tl():
         assert param.device.type == original_device.type
 
 
+@pytest.mark.high_mem
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_offload_nnsight():
     s = "The National Digital Analytics Group (ND"
@@ -75,6 +76,7 @@ def test_offload_nnsight():
         assert param.device.type == original_device.type
 
 
+@pytest.mark.high_mem
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_offload_nnsight_gemma_3():
     s = "The National Digital Analytics Group (ND"

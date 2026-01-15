@@ -57,6 +57,8 @@ exclude = ["**/node_modules", "**/__pycache__", "**/.*", "demos"]
 [tool.pytest.ini_options]
 markers = [
     "requires_disk: marks tests requiring storage space",
+    "long_running: marks tests that take a very long time to complete",
+    "high_mem: marks tests requiring significant GPU memory (>24GB VRAM or multiple large models)",
 ]
 
 [dependency-groups]

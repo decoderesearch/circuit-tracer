@@ -410,7 +410,7 @@ def test_gemma_2_2b_clt():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mntss/clt-gemma-2-2b-426k")
     assert isinstance(model, TransformerLensReplacementModel)
-    graph = attribute(s, model)
+    graph = attribute(s, model, batch_size=256)
 
     print("Changing logit softcap to 0, as the logits will otherwise be off.")
     with model.zero_softcap():
