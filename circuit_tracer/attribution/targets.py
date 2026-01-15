@@ -295,7 +295,7 @@ class AttributionTargets:
         Args:
             targets: List of mixed target specifications
             logits: ``(d_vocab,)`` logit vector
-            unembed_proj: ``(d_model, d_vocab)`` unembedding matrix
+            unembed_proj: ``(d_model, d_vocab)`` or ``(d_vocab, d_model)`` unembedding matrix
             tokenizer: Tokenizer for string→int conversion
 
         Returns:
@@ -314,7 +314,8 @@ class AttributionTargets:
         Args:
             indices: ``(k,)`` vocabulary indices to compute vectors for
             logits: ``(d_vocab,)`` logit vector for single position
-            unembed_proj: ``(d_model, d_vocab)`` unembedding matrix
+            unembed_proj: ``(d_model, d_vocab)`` or ``(d_vocab, d_model)`` unembedding matrix
+                         (orientation auto-detected by matching vocab dimension to logits)
 
         Returns:
             Tuple of:
@@ -324,9 +325,21 @@ class AttributionTargets:
         """
         probs = torch.softmax(logits, dim=-1)
         selected_probs = probs[indices]
-        cols = unembed_proj[:, indices]
-        demeaned = cols - unembed_proj.mean(dim=-1, keepdim=True)
-        return indices, selected_probs, demeaned.T
+
+        # Auto-detect matrix orientation by matching against vocabulary size
+        d_vocab = logits.shape[0]
+        if unembed_proj.shape[0] == d_vocab:
+            # Shape is (d_vocab, d_model) – first axis is vocabulary (e.g., NNSight)
+            cols = unembed_proj[indices]  # (k, d_model)
+            demean = unembed_proj.mean(dim=0, keepdim=True)  # (1, d_model)
+            demeaned_vecs = cols - demean  # (k, d_model)
+        else:
+            # Shape is (d_model, d_vocab) – second axis is vocabulary (e.g., TransformerLens)
+            cols = unembed_proj[:, indices]  # (d_model, k)
+            demean = unembed_proj.mean(dim=-1, keepdim=True)  # (d_model, 1)
+            demeaned_vecs = (cols - demean).T  # (k, d_model)
+
+        return indices, selected_probs, demeaned_vecs
 
     @staticmethod
     def _process_target_list(
@@ -346,7 +359,7 @@ class AttributionTargets:
         Args:
             targets: List of attribution targets in any combination of the above formats
             logits: ``(d_vocab,)`` vector for computing probabilities
-            unembed_proj: ``(d_model, d_vocab)`` unembedding matrix for computing vectors
+            unembed_proj: ``(d_model, d_vocab)`` or ``(d_vocab, d_model)`` unembedding matrix
             tokenizer: Tokenizer to use for string token conversion and to get vocab_size
 
         Returns:
