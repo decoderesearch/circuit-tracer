@@ -225,8 +225,22 @@ def test_llama_3_2_1b():
     verify_feature_edges(model, graph)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_llama_3_2_1b_clt():
+    s = "The National Digital Analytics Group (ND"
+    model = ReplacementModel.from_pretrained(
+        "meta-llama/Llama-3.2-1B", "mntss/clt-llama-3.2-1b-524k"
+    )
+    assert isinstance(model, TransformerLensReplacementModel)
+    graph = attribute(s, model, batch_size=128)
+
+    verify_token_and_error_edges(model, graph)
+    verify_feature_edges(model, graph)
+
+
 if __name__ == "__main__":
     torch.manual_seed(42)
     test_small_llama_model()
     test_large_llama_model()
     test_llama_3_2_1b()
+    test_llama_3_2_1b_clt()

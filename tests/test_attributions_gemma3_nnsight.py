@@ -149,13 +149,13 @@ def verify_token_and_error_edges(
     act_rtol=1e-3,
     logit_atol=1e-5,
     logit_rtol=1e-3,
+    pos_start=1,
 ):
     s = graph.input_tokens
     adjacency_matrix = graph.adjacency_matrix.to(device=model.device, dtype=model.dtype)
     active_features = graph.active_features.to(device=model.device)
     logit_tokens = graph.logit_tokens.to(device=model.device)
     total_active_features = active_features.size(0)
-    pos_start = 1  # skip first position (BOS token)
 
     ctx = model.setup_attribution(s)
 
@@ -527,6 +527,24 @@ def test_gemma_3_1b():
 
 @pytest.mark.high_mem
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_gemma_3_1b_it():
+    s = "<bos><start_of_turn>user\nThe National Digital Analytics Group (ND"
+    model = ReplacementModel.from_pretrained(
+        "google/gemma-3-1b-it",
+        "mwhanna/gemma-scope-2-1b-it/transcoder_all/width_16k_l0_small_affine",
+        dtype=torch.float32,
+        backend="nnsight",
+    )
+    graph = attribute(s, model)
+    assert isinstance(model, NNSightReplacementModel)
+
+    print("Changing logit softcap to 0, as the logits will otherwise be off.")
+    with model.zero_softcap():
+        verify_token_and_error_edges(model, graph, pos_start=4)
+        verify_feature_edges(model, graph)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_3_1b_clt():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained(
@@ -572,5 +590,6 @@ if __name__ == "__main__":
     test_gemma3_with_dummy_transcoders()
     test_gemma3_with_dummy_clt()
     test_gemma_3_1b()
+    test_gemma_3_1b_it()
     test_gemma_3_1b_clt()
     test_gemma_3_4b()

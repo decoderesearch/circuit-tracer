@@ -281,7 +281,9 @@ class CrossLayerTranscoder(torch.nn.Module):
 
         return pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_mapping
 
-    def compute_reconstruction(self, pos_ids, layer_ids, decoder_vectors):
+    def compute_reconstruction(
+        self, pos_ids, layer_ids, decoder_vectors, input_acts: torch.Tensor | None = None
+    ):
         n_pos = pos_ids.max() + 1
         flat_idx = layer_ids * n_pos + pos_ids
         recon = torch.zeros(
@@ -290,11 +292,17 @@ class CrossLayerTranscoder(torch.nn.Module):
             device=decoder_vectors.device,
             dtype=decoder_vectors.dtype,
         ).index_add_(0, flat_idx, decoder_vectors)
-        return recon.reshape(self.n_layers, n_pos, self.d_model) + self.b_dec[:, None]
+        recon = recon.reshape(self.n_layers, n_pos, self.d_model) + self.b_dec[:, None]
+        if self.W_skip is not None:
+            assert input_acts is not None, (
+                "Transcoder has skip connection but no input_acts were provided"
+            )
+            recon = recon + input_acts @ self.W_skip
+        return recon
 
-    def decode(self, features):
+    def decode(self, features, input_acts: torch.Tensor | None = None):
         pos_ids, layer_ids, feat_ids, decoder_vectors, _ = self.select_decoder_vectors(features)
-        return self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors)
+        return self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors, input_acts)
 
     def compute_skip(self, layer_id: int, inputs):
         if self.W_skip is not None:
@@ -330,7 +338,7 @@ class CrossLayerTranscoder(torch.nn.Module):
         pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_to_decoder_map = (
             self.select_decoder_vectors(features)
         )
-        reconstruction = self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors)
+        reconstruction = self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors, inputs)
 
         return {
             "activation_matrix": features,
