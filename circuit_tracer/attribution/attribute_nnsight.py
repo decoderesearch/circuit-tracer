@@ -23,7 +23,7 @@ https://transformer-circuits.pub/2025/attribution-graphs/methods.html
 import logging
 import time
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, cast
 
 import torch
 from tqdm import tqdm
@@ -177,7 +177,7 @@ def _run_attribution(
     targets = AttributionTargets(
         attribution_targets=attribution_targets,
         logits=ctx.logits[0, -1],
-        unembed_proj=model.unembed_weight,  # NNSight uses unembed_weight
+        unembed_proj=cast(torch.Tensor, model.unembed_weight),  # NNSight uses unembed_weight
         tokenizer=model.tokenizer,
         max_n_logits=max_n_logits,
         desired_logit_prob=desired_logit_prob,

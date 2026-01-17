@@ -149,7 +149,7 @@ def test_large_llama_model():
         tokenizer_class.all_special_ids = original_all_special_ids  # type:ignore
 
 
-@pytest.mark.high_mem
+@pytest.mark.large_gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_llama_3_2_1b():
     s = "The National Digital Analytics Group (ND"

@@ -525,7 +525,7 @@ def test_gemma_3_1b():
         verify_feature_edges(model, graph)
 
 
-@pytest.mark.high_mem
+@pytest.mark.large_gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_3_1b_it():
     s = "<bos><start_of_turn>user\nThe National Digital Analytics Group (ND"
@@ -544,6 +544,7 @@ def test_gemma_3_1b_it():
         verify_feature_edges(model, graph)
 
 
+@pytest.mark.large_gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_3_1b_clt():
     s = "The National Digital Analytics Group (ND"
@@ -562,7 +563,7 @@ def test_gemma_3_1b_clt():
         verify_feature_edges(model, graph)
 
 
-@pytest.mark.high_mem
+@pytest.mark.large_gpu
 @pytest.mark.long_running
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_3_4b():

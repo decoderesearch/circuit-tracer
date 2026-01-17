@@ -3,7 +3,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import contextmanager
 from functools import partial
-from typing import Callable, Iterator, Literal
+from typing import Callable, Iterator, Literal, cast
 
 import torch
 from torch import nn
@@ -241,8 +241,12 @@ class NNSightReplacementModel(LanguageModel):
         self._embed_location = nnsight_config.embed_location
 
         # these are real weights, not envoys
-        self.embed_weight = self._resolve_attr(self, nnsight_config.embed_weight)
-        self.unembed_weight = self._resolve_attr(self, nnsight_config.unembed_weight)
+        self.embed_weight = cast(
+            torch.Tensor, self._resolve_attr(self, nnsight_config.embed_weight)
+        )
+        self.unembed_weight = cast(
+            torch.Tensor, self._resolve_attr(self, nnsight_config.unembed_weight)
+        )
         self.scan = transcoder_set.scan
 
         # Make sure the replacement model is entirely frozen by default.

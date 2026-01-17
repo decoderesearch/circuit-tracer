@@ -159,7 +159,7 @@ def build_model(graph: "Graph", used_nodes, used_edges, slug, scan, node_thresho
 
 
 def create_graph_files(
-    graph_or_path: "Graph" | str,
+    graph_or_path: "Graph | str",
     slug: str,
     output_path,
     scan=None,
