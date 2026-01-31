@@ -11,6 +11,7 @@ dependencies = [
     "ipywidgets>=8.1.7",
     "nnsight>=0.5.13",
     "numpy>=1.24.0",
+    "packaging>=20.0",
     "pydantic>=2.0.0",
     "safetensors>=0.5.0",
     "seaborn>=0.13.2",
