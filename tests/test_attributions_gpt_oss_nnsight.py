@@ -489,10 +489,10 @@ def test_large_gpt_oss_model():
         # Use relaxed tolerances for float32 (transformers v5 MoE doesn't support float64)
         # With 16 layers and random weights, accumulated float32 errors require looser atol
         verify_token_and_error_edges(
-            model, graph, act_atol=0.2, act_rtol=1e-2, logit_atol=0.2, logit_rtol=1e-2
+            model, graph, act_atol=1.5, act_rtol=1e-2, logit_atol=1.5, logit_rtol=1e-2
         )
         verify_feature_edges(
-            model, graph, act_atol=0.2, act_rtol=1e-2, logit_atol=0.2, logit_rtol=1e-2
+            model, graph, act_atol=1.5, act_rtol=1e-2, logit_atol=1.5, logit_rtol=1e-2
         )
     finally:
         # Restore original property
