@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "einops>=0.8.0",
-    "huggingface_hub<1.0.0",
+    "huggingface_hub>=0.25.0",
     "ipykernel>=6.29.5,<7.0.0",
     "ipywidgets>=8.1.7",
     "nnsight>=0.5.13",
