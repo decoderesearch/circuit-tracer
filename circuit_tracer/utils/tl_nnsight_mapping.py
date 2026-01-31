@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from packaging import version
+import transformers
+
+# Version detection for transformers v5+ compatibility
+TRANSFORMERS_VERSION = version.parse(transformers.__version__)
+TRANSFORMERS_GTE_5_0_0 = TRANSFORMERS_VERSION >= version.parse("5.0.0")
+
 
 @dataclass
 class TransformerLens_NNSight_Mapping:
@@ -74,30 +81,43 @@ gemma_3_mapping = TransformerLens_NNSight_Mapping(
     },
 )
 
+# Gemma 3 Conditional (multimodal) mapping
+# In transformers v5+, the model structure is: model.language_model.layers[...]
+# In transformers v4, the model structure is: language_model.layers[...]
+_gemma3_cond_prefix = "model.language_model" if TRANSFORMERS_GTE_5_0_0 else "language_model"
 gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma3ForConditionalGeneration",
-    attention_location_pattern="language_model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern=f"{_gemma3_cond_prefix}.layers[{{layer}}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
-        "language_model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "language_model.layers[{layer}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
-        "language_model.layers[{layer}].self_attn.k_norm.source.self__norm_0.source.torch_rsqrt_0",
-        "language_model.layers[{layer}].post_attention_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "language_model.layers[{layer}].post_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "language_model.norm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.layers[{{layer}}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.layers[{{layer}}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.layers[{{layer}}].self_attn.k_norm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.layers[{{layer}}].post_attention_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.layers[{{layer}}].pre_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.layers[{{layer}}].post_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        f"{_gemma3_cond_prefix}.norm.source.self__norm_0.source.torch_rsqrt_0",
     ],
-    pre_logit_location="language_model",
-    embed_location="language_model.embed_tokens",
-    embed_weight="language_model.embed_tokens.weight",
+    pre_logit_location=_gemma3_cond_prefix,
+    embed_location=f"{_gemma3_cond_prefix}.embed_tokens",
+    embed_weight=f"{_gemma3_cond_prefix}.embed_tokens.weight",
     unembed_weight="lm_head.weight",
     feature_hook_mapping={
         "ln2.hook_normalized": (
-            "language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
+            f"{_gemma3_cond_prefix}.layers[{{layer}}].pre_feedforward_layernorm.source.self__norm_0",
             "output",
         ),
-        "hook_resid_mid": ("language_model.layers[{layer}].pre_feedforward_layernorm", "input"),
-        "mlp.hook_in": ("language_model.layers[{layer}].pre_feedforward_layernorm", "output"),
-        "hook_mlp_out": ("language_model.layers[{layer}].post_feedforward_layernorm", "output"),
+        "hook_resid_mid": (
+            f"{_gemma3_cond_prefix}.layers[{{layer}}].pre_feedforward_layernorm",
+            "input",
+        ),
+        "mlp.hook_in": (
+            f"{_gemma3_cond_prefix}.layers[{{layer}}].pre_feedforward_layernorm",
+            "output",
+        ),
+        "hook_mlp_out": (
+            f"{_gemma3_cond_prefix}.layers[{{layer}}].post_feedforward_layernorm",
+            "output",
+        ),
     },
 )
 
@@ -142,6 +162,15 @@ qwen_3_mapping = TransformerLens_NNSight_Mapping(
 )
 
 
+# GptOss (MoE) mapping
+# In transformers v5, GptOssMLP.forward() explicitly reshapes hidden_states from 2D to 3D
+# before returning, changing which NNSight .source reference captures the 3D output.
+# In transformers v4, the 3D output was captured via self_experts_0.
+_gpt_oss_mlp_hook = (
+    "model.layers[{layer}].mlp.source.hidden_states_reshape_1"
+    if TRANSFORMERS_GTE_5_0_0
+    else "model.layers[{layer}].mlp.source.self_experts_0"
+)
 gpt_oss_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="GptOssForCausalLM",
     attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
@@ -157,8 +186,8 @@ gpt_oss_mapping = TransformerLens_NNSight_Mapping(
     feature_hook_mapping={
         "hook_resid_mid": ("model.layers[{layer}].post_attention_layernorm", "input"),
         "mlp.hook_in": ("model.layers[{layer}].post_attention_layernorm", "output"),
-        "mlp.hook_out": ("model.layers[{layer}].mlp.source.self_experts_0", "output"),
-        "hook_mlp_out": ("model.layers[{layer}].mlp.source.self_experts_0", "output"),
+        "mlp.hook_out": (_gpt_oss_mlp_hook, "output"),
+        "hook_mlp_out": (_gpt_oss_mlp_hook, "output"),
     },
 )
 

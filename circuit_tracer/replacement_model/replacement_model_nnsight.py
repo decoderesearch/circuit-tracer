@@ -993,7 +993,7 @@ class NNSightReplacementModel(LanguageModel):
             with tracer.invoke():
                 out = save(self.generator.output)
         return (
-            tokenizer.decode(out.squeeze(0)),
+            str(tokenizer.decode(out.squeeze(0))),
             torch.cat(all_logits, dim=0),
             (activation_cache[0] if return_activations else None),
         )

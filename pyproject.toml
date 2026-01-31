@@ -18,11 +18,11 @@ dependencies = [
     "torch>=2.0.0",
     "tqdm>=4.60.0",
     "transformer-lens>=2.16.0",
-    "transformers>=4.56.0,<=4.57.3",
+    "transformers>=4.56.0,<=5.1.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0.0", "ruff>=0.12.7", "pyright>=1.1.403", "ipython>=8.37.0"]
+dev = ["pytest>=8.0.0", "pytest-rerunfailures>=14.0", "ruff>=0.12.7", "pyright>=1.1.403", "ipython>=8.37.0"]
 
 [project.scripts]
 circuit-tracer = "circuit_tracer.__main__:main"
