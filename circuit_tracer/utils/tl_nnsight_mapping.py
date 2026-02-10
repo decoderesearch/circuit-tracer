@@ -277,7 +277,7 @@ def convert_nnsight_config_to_transformerlens(config):
         config_dict |= config_dict["text_config"]
 
     for nnsight_field, transformerlens_field in field_mappings.items():
-        if transformerlens_field not in config_dict and nnsight_field in config_dict:
+        if transformerlens_field not in config_dict:
             config_dict[transformerlens_field] = config_dict[nnsight_field]
 
     return UnifiedConfig.from_dict(config_dict)

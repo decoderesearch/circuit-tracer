@@ -14,6 +14,7 @@ import torch
 from circuit_tracer.graph import Graph
 
 if TYPE_CHECKING:
+    from circuit_tracer.attribution.targets import TargetSpec
     from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
     from circuit_tracer.replacement_model.replacement_model_transformerlens import (
         TransformerLensReplacementModel,
@@ -24,9 +25,7 @@ def attribute(
     prompt: str | torch.Tensor | list[int],
     model: "NNSightReplacementModel | TransformerLensReplacementModel",
     *,
-    attribution_targets: (
-        Sequence[tuple[str, float, torch.Tensor] | int | str] | torch.Tensor | None
-    ) = None,
+    attribution_targets: "Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None" = None,
     max_n_logits: int = 10,
     desired_logit_prob: float = 0.95,
     batch_size: int = 512,
@@ -43,16 +42,13 @@ def attribute(
     Args:
         prompt: Text, token ids, or tensor - will be tokenized if str.
         model: Frozen ``ReplacementModel`` (either nnsight or transformerlens backend)
-        attribution_targets: Flexible attribution target specification in one of several formats:
+        attribution_targets: Target specification in one of four formats:
                           - None: Auto-select salient logits based on probability threshold
                           - torch.Tensor: Tensor of token indices
-                          - Sequence[tuple[str, float, torch.Tensor] | int | str]: Sequence where
-                            each element can be:
-                              * int or str: Token ID/string (auto-resolves probability and
-                                unembed vector)
-                              * tuple[str, float, torch.Tensor]: Fully specified logit spec with
-                                arbitrary string tokens (or functions thereof) that may not be in
-                                vocabulary
+                          - Sequence[str]: Token strings (tokenized, auto-computes probability
+                            and unembed vector)
+                          - Sequence[TargetSpec]: Fully specified custom targets (CustomTarget or
+                            tuple[str, float, torch.Tensor]) with arbitrary unembed directions
         max_n_logits: Max number of logit nodes (used when attribution_targets is None).
         desired_logit_prob: Keep logits until cumulative prob >= this value
                            (used when attribution_targets is None).

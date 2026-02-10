@@ -14,35 +14,47 @@ Key concepts:
 
 from collections.abc import Sequence
 from typing import NamedTuple
+import logging
+import warnings
 
 import torch
 
 
 class LogitTarget(NamedTuple):
-    """Data transfer object (DTO) for logit attribution targets.
-
-    A lightweight record structure containing token metadata for attribution.
-
-    Attributes:
-        token_str: String representation of the token (decoded from vocab or arbitrary)
-        vocab_idx: Vocabulary index - either a real token ID (< vocab_size) or
-                   a virtual index for OOV tokens (>= vocab_size)
-    """
+    """Token metadata for attribution: string representation and vocabulary index."""
 
     token_str: str
     vocab_idx: int
 
 
+class CustomTarget(NamedTuple):
+    """A fully specified custom attribution target.
+
+    Attributes:
+        token_str: Label for this target (e.g., "logit(x)-logit(y)")
+        prob: Weight/probability for this target
+        vec: Custom unembed direction vector (d_model,)
+    """
+
+    token_str: str
+    prob: float
+    vec: torch.Tensor
+
+
+TargetSpec = CustomTarget | tuple[str, float, torch.Tensor]
+
+
 class AttributionTargets:
     """Container for processed attribution target specifications.
 
-    High-level data structure that encapsulates target identifiers, softmax probabilities,
-    and demeaned unembedding vectors needed for attribution graph computation.
+    Encapsulates target identifiers, softmax probabilities, and demeaned unembedding
+    vectors needed for attribution graph computation.
 
-    Supports multiple input formats for flexible target specification:
+    Supports four input formats:
     - None: Auto-select salient logits by probability threshold
-    - torch.Tensor: Specific vocabulary indices (i.e. token_ids)
-    - list: Mixed targets (tuples for OOV tokens, ints/strs for valid token_ids)
+    - torch.Tensor: Specific vocabulary indices (token IDs)
+    - Sequence[str]: Token strings (tokenized internally)
+    - Sequence[TargetSpec]: Fully specified custom targets (CustomTarget or raw tuple[str, float, torch.Tensor])
 
     Attributes:
         logit_targets: List of LogitTarget records with token strings and vocab indices
@@ -52,9 +64,7 @@ class AttributionTargets:
 
     def __init__(
         self,
-        attribution_targets: (
-            Sequence[tuple[str, float, torch.Tensor] | int | str] | torch.Tensor | None
-        ),
+        attribution_targets: Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None,
         logits: torch.Tensor,
         unembed_proj: torch.Tensor,
         tokenizer,
@@ -65,14 +75,13 @@ class AttributionTargets:
         """Build attribution targets from user specification.
 
         Args:
-            attribution_targets: Target specification in one of several formats:
+            attribution_targets: Target specification in one of four formats:
                 - None: Auto-select salient logits based on probability threshold
                 - torch.Tensor: Tensor of vocabulary token IDs
-                - list[tuple[str, float, torch.Tensor] | int | str]: List where
-                  each element can be:
-                    * int or str: Token ID/string (auto-computes probability & vector)
-                    * tuple[str, float, torch.Tensor]: Fully specified target logit with arbitrary
-                      string token (or function thereof) (may use virtual index for OOV tokens)
+                - Sequence[str]: Token strings (tokenized, then auto-computes probability & vector)
+                - Sequence[TargetSpec]: Fully specified custom targets (CustomTarget or
+                  tuple[str, float, torch.Tensor]) with custom probability and unembed direction
+                  (uses virtual index for OOV tokens)
             logits: ``(d_vocab,)`` logit vector for single position
             unembed_proj: ``(d_model, d_vocab)`` unembedding matrix
             tokenizer: Tokenizer for string→int conversion
@@ -89,14 +98,23 @@ class AttributionTargets:
             attr_spec = self._from_salient(**salient_ctor, **ctor_shared)
         elif isinstance(attribution_targets, torch.Tensor):
             attr_spec = self._from_indices(indices=attribution_targets, **ctor_shared)
-        elif isinstance(attribution_targets, list):
+        elif isinstance(attribution_targets, Sequence):
             if not attribution_targets:
-                raise ValueError("attribution_targets list cannot be empty")
-            attr_spec = self._from_list(target_list=attribution_targets, **ctor_shared)
+                raise ValueError("attribution_targets sequence cannot be empty")
+            first = attribution_targets[0]
+            if isinstance(first, str):
+                attr_spec = self._from_str(token_strs=attribution_targets, **ctor_shared)  # type: ignore[arg-type]
+            elif isinstance(first, (tuple, CustomTarget)):
+                attr_spec = self._from_tuple(target_tuples=attribution_targets, **ctor_shared)  # type: ignore[arg-type]
+            else:
+                raise TypeError(
+                    f"Sequence elements must be str or TargetSpec (CustomTarget or "
+                    f"tuple[str, float, Tensor]), got {type(first)}"
+                )
         else:
             raise TypeError(
-                f"attribution_targets must be None, torch.Tensor, or list, "
-                f"got {type(attribution_targets)}"
+                f"attribution_targets must be None, torch.Tensor, Sequence[str], "
+                f"or Sequence[TargetSpec], got {type(attribution_targets)}"
             )
         self.logit_targets, self.logit_probabilities, self.logit_vectors = attr_spec
 
@@ -135,51 +153,22 @@ class AttributionTargets:
     @property
     def vocab_indices(self) -> list[int]:
         """All vocabulary indices including virtual indices (>= vocab_size).
-        Vocab indices are a generalization of token IDs that can represent:
-        - Real vocab indices (< vocab_size) for token_ids valid in the current tokenizer vocab space
-        - Virtual indices (>= vocab_size) for arbitrary string tokens (or functions thereof)
-
-        Use has_virtual_indices to check if any virtual indices are present.
-        Use token_ids to get a tensor of only real vocabulary indices.
 
         Returns:
-            List of vocabulary indices (including virtual indices)
+            List of vocabulary indices
         """
         return [target.vocab_idx for target in self.logit_targets]
 
     @property
-    def has_virtual_indices(self) -> bool:
-        """Check if any targets use virtual indices (OOV tokens).
-
-        Virtual indices (vocab_idx >= vocab_size) are a technique for representing
-        arbitrary string tokens not in the model's vocabulary.
-
-        Returns:
-            True if virtual indices are present, False otherwise
-        """
-        vocab_size = self.tokenizer.vocab_size
-        return any(t.vocab_idx >= vocab_size for t in self.logit_targets)
-
-    @property
     def token_ids(self) -> torch.Tensor:
-        """Tensor of valid vocabulary indices (< vocab_size only).
+        """Tensor of vocabulary indices.
 
         Returns a torch.Tensor of vocab indices on the same device as other tensors,
-        suitable for indexing into logit vectors or embeddings. This property will
-        raise a ValueError if any targets use virtual indices (arbitrary strings).
-
-        Raises:
-            ValueError: If any targets have virtual indices (vocab_idx >= vocab_size)
+        suitable for indexing into logit vectors or embeddings.
 
         Returns:
             torch.Tensor: Long tensor of vocabulary indices
         """
-        if self.has_virtual_indices:
-            raise ValueError(
-                "Cannot create token_ids tensor: some targets use virtual indices "
-                "(arbitrary strings not in vocabulary). Check has_virtual_indices "
-                "before accessing token_ids, or use vocab_indices to get all indices."
-            )
         return torch.tensor(
             self.vocab_indices, dtype=torch.long, device=self.logit_probabilities.device
         )
@@ -279,29 +268,117 @@ class AttributionTargets:
         return logit_targets, probs, vecs
 
     @staticmethod
-    def _from_list(
-        target_list: Sequence[tuple[str, float, torch.Tensor] | int | str],
+    def _from_str(
+        token_strs: Sequence[str],
         logits: torch.Tensor,
         unembed_proj: torch.Tensor,
         tokenizer,
     ) -> tuple[list[LogitTarget], torch.Tensor, torch.Tensor]:
-        """Construct from mixed list of targets.
+        """Construct from a sequence of token strings.
 
-        Supports heterogeneous list where each element can be:
-        - int: Vocabulary index (auto-compute prob/vec)
-        - str: Token string (tokenize, auto-compute)
-        - tuple[str, float, Tensor]: Fully specified arbitrary string or function thereof
+        Each string is tokenized and its probability/vector auto-computed.
 
         Args:
-            targets: List of mixed target specifications
+            token_strs: Sequence of token strings
             logits: ``(d_vocab,)`` logit vector
-            unembed_proj: ``(d_model, d_vocab)`` or ``(d_vocab, d_model)`` unembedding matrix
+            unembed_proj: Unembedding matrix
             tokenizer: Tokenizer for string→int conversion
 
         Returns:
             Tuple of (logit_targets, probabilities, vectors)
         """
-        return AttributionTargets._process_target_list(target_list, logits, unembed_proj, tokenizer)
+        vocab_size = logits.shape[0]
+        indices = []
+        for token_str in token_strs:
+            try:
+                ids = tokenizer.encode(token_str, add_special_tokens=False)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to encode string token {token_str!r} using tokenizer: {e}"
+                ) from e
+            if not ids:
+                raise ValueError(f"String token {token_str!r} encoded to empty token sequence.")
+            if len(ids) > 1:
+                warnings.warn(
+                    f"String token {token_str!r} encoded to {len(ids)} tokens; "
+                    f"using only the last token (index {ids[-1]}). "
+                    f"Consider providing single-token strings for more predictable behavior."
+                )
+            token_id = ids[-1]
+            assert 0 <= token_id < vocab_size, (
+                f"Token {token_str!r} resolved to index {token_id}, "
+                f"out of vocabulary range [0, {vocab_size})"
+            )
+            indices.append(token_id)
+        return AttributionTargets._from_indices(
+            indices=torch.tensor(indices, dtype=torch.long),
+            logits=logits,
+            unembed_proj=unembed_proj,
+            tokenizer=tokenizer,
+        )
+
+    @staticmethod
+    def _validate_custom_target(
+        target: TargetSpec,
+    ) -> CustomTarget:
+        """Validate and normalize a custom target.
+
+        Args:
+            target: A CustomTarget or raw (token_str, prob, vec) tuple
+
+        Returns:
+            Validated CustomTarget instance
+
+        Raises:
+            ValueError: If the tuple has wrong length or element types
+        """
+        if not isinstance(target, CustomTarget):
+            if len(target) != 3:
+                raise ValueError(
+                    f"Tuple targets must have exactly 3 elements "
+                    f"(token_str, probability, vector), got {len(target)}"
+                )
+            token_str, prob, vec = target
+        else:
+            token_str, prob, vec = target.token_str, target.prob, target.vec
+        if not isinstance(token_str, str):
+            raise TypeError(f"Custom target token_str must be str, got {type(token_str)}")
+        if not isinstance(prob, (int, float)):
+            raise TypeError(f"Custom target prob must be int or float, got {type(prob)}")
+        if not isinstance(vec, torch.Tensor):
+            raise TypeError(f"Custom target vec must be torch.Tensor, got {type(vec)}")
+        return CustomTarget(token_str=token_str, prob=float(prob), vec=vec)
+
+    @staticmethod
+    def _from_tuple(
+        target_tuples: Sequence[TargetSpec],
+        logits: torch.Tensor,
+        unembed_proj: torch.Tensor,
+        tokenizer,
+    ) -> tuple[list[LogitTarget], torch.Tensor, torch.Tensor]:
+        """Construct from fully specified custom targets.
+
+        Each target provides (token_str, prob, vec) for an arbitrary
+        attribution direction that may not correspond to a vocabulary token.
+
+        Args:
+            target_tuples: Sequence of CustomTarget or raw tuple instances
+            logits: ``(d_vocab,)`` logit vector (used for vocab_size)
+            unembed_proj: Unembedding matrix (unused but kept for interface consistency)
+            tokenizer: Tokenizer (unused but kept for interface consistency)
+
+        Returns:
+            Tuple of (logit_targets, probabilities, vectors)
+        """
+        vocab_size = logits.shape[0]
+        logit_targets, probs, vecs = [], [], []
+        for position, target in enumerate(target_tuples):
+            validated = AttributionTargets._validate_custom_target(target)
+            virtual_idx = vocab_size + position
+            logit_targets.append(LogitTarget(token_str=validated.token_str, vocab_idx=virtual_idx))
+            probs.append(validated.prob)
+            vecs.append(validated.vec)
+        return logit_targets, torch.tensor(probs), torch.stack(vecs)
 
     @staticmethod
     def _compute_logit_vecs(
@@ -341,105 +418,31 @@ class AttributionTargets:
 
         return indices, selected_probs, demeaned_vecs
 
-    @staticmethod
-    def _process_target_list(
-        targets: Sequence[tuple[str, float, torch.Tensor] | int | str],
-        logits: torch.Tensor,
-        unembed_proj: torch.Tensor,
-        tokenizer,
-    ) -> tuple[list[LogitTarget], torch.Tensor, torch.Tensor]:
-        """Process mixed target list into LogitTarget instances, probabilities, vectors.
 
-        Supports flexible mixed-mode targets where each element can be:
-        - int: Token ID (computes probability and vector, uses actual vocab index)
-        - str: Token string (tokenizes, computes probability and vector, uses actual token_id)
-        - tuple[str, float, torch.Tensor]: Arbitrary string or function thereof with custom prob/vec
-          (uses virtual index)
+def log_attribution_target_info(
+    targets: "AttributionTargets",
+    attribution_targets: Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None,
+    logger: logging.Logger,
+) -> None:
+    """Log information about attribution targets.
 
-        Args:
-            targets: List of attribution targets in any combination of the above formats
-            logits: ``(d_vocab,)`` vector for computing probabilities
-            unembed_proj: ``(d_model, d_vocab)`` or ``(d_vocab, d_model)`` unembedding matrix
-            tokenizer: Tokenizer to use for string token conversion and to get vocab_size
-
-        Returns:
-            Tuple of:
-                * logit_targets - List of LogitTarget instances where:
-                    - For int/str tokens: vocab_idx is actual vocab index, token_str is decoded
-                    - For tuple targets: vocab_idx is virtual (vocab_size + position),
-                      token_str is the arbitrary string or function thereof
-                * probabilities - ``(k,)`` probabilities
-                * vectors - ``(k, d_model)`` demeaned vectors
-
-        Raises:
-            ValueError: If str token cannot be encoded or int token is out of vocab range
-        """
-        vocab_size = logits.shape[0]
-
-        def validate_token_id(token_id: int, original_token: int | str) -> None:
-            """Validate that token_id is within valid vocabulary range."""
-            if not (0 <= token_id < vocab_size):
-                raise ValueError(
-                    f"Token {original_token!r} resolved to index {token_id}, which is "
-                    f"out of vocabulary range [0, {vocab_size})"
-                )
-
-        def token_to_idx(token: int | str) -> int:
-            """Convert token (int or str) to token index with validation."""
-            if isinstance(token, str):
-                try:
-                    ids = tokenizer.encode(token, add_special_tokens=False)
-                except Exception as e:
-                    raise ValueError(
-                        f"Failed to encode string token {token!r} using tokenizer: {e}"
-                    ) from e
-
-                if not ids:
-                    raise ValueError(
-                        f"String token {token!r} encoded to empty token sequence. "
-                        f"Cannot determine valid token ID."
-                    )
-
-                token_id = ids[-1]
-                validate_token_id(token_id, token)
-                return token_id
-            else:
-                validate_token_id(token, token)
-                return token
-
-        logit_targets, probs, vecs = [], [], []
-
-        for position, target in enumerate(targets):
-            if isinstance(target, tuple):
-                # Fully specified tuple: (str_token, probability, vector)
-                # This is an arbitrary string or function of one, so we use virtual indices
-                if len(target) != 3:
-                    raise ValueError(
-                        f"Tuple targets must have exactly 3 elements "
-                        f"(token_str, probability, vector), got {len(target)}"
-                    )
-                token_str, prob, vec = target
-                if not isinstance(token_str, str):
-                    raise ValueError(
-                        f"Tuple targets must have str as first element, got {type(token_str)}"
-                    )
-
-                # Use virtual index for arbitrary string/function thereof
-                virtual_idx = vocab_size + position
-                logit_targets.append(LogitTarget(token_str=token_str, vocab_idx=virtual_idx))
-                probs.append(prob)
-                vecs.append(vec)
-            else:
-                # Single token (int | str) - compute probability and vector, use valid token_ids
-                idx = token_to_idx(target)
-                idx_tensor = torch.tensor([idx], dtype=torch.long)
-                _, prob_tensor, vec_tensor = AttributionTargets._compute_logit_vecs(
-                    idx_tensor, logits, unembed_proj
-                )
-
-                token_str = tokenizer.decode(idx)
-                logit_targets.append(LogitTarget(token_str=token_str, vocab_idx=idx))
-                probs.append(prob_tensor.item())
-                vecs.append(vec_tensor.squeeze(0))
-
-        return logit_targets, torch.tensor(probs), torch.stack(vecs)
+    Args:
+        targets: AttributionTargets instance with processed targets
+        attribution_targets: Original attribution_targets specification
+        logger: Logger to use for output
+    """
+    prob_sum = targets.logit_probabilities.sum().item()
+    if attribution_targets is None:
+        target_desc = "salient logits"
+        weight_desc = "cumulative probability"
+    elif (
+        isinstance(attribution_targets, Sequence)
+        and attribution_targets
+        and isinstance(attribution_targets[0], (tuple, CustomTarget))
+    ):
+        target_desc = "custom attribution targets"
+        weight_desc = "total weight"
+    else:
+        target_desc = "specified logit targets"
+        weight_desc = "cumulative probability"
+    logger.info(f"Using {len(targets)} {target_desc} with {weight_desc} {prob_sum:.4f}")
