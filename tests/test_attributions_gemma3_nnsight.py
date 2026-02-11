@@ -14,6 +14,7 @@ from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
+from tests.conftest import has_32gb
 
 gemma_3_config_dict = {
     "_sliding_window_pattern": 6,
@@ -525,8 +526,7 @@ def test_gemma_3_1b():
         verify_feature_edges(model, graph)
 
 
-@pytest.mark.large_gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")
 def test_gemma_3_1b_it():
     s = "<bos><start_of_turn>user\nThe National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained(
@@ -544,8 +544,7 @@ def test_gemma_3_1b_it():
         verify_feature_edges(model, graph)
 
 
-@pytest.mark.large_gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")
 def test_gemma_3_1b_clt():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained(
@@ -563,9 +562,7 @@ def test_gemma_3_1b_clt():
         verify_feature_edges(model, graph)
 
 
-@pytest.mark.large_gpu
-@pytest.mark.long_running
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")
 def test_gemma_3_4b():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained(
