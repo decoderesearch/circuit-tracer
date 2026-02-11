@@ -1,7 +1,7 @@
 """
 Build an **attribution graph** that captures the *direct*, *linear* effects
 between features and next-token logits for a *prompt-specific*
-**local replacement model** using the NNSight backend.
+**local replacement model**.
 
 High-level algorithm (matches the 2025 ``Attribution Graphs`` paper):
 https://transformer-circuits.pub/2025/attribution-graphs/methods.html

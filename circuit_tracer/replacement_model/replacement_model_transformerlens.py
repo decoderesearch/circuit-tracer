@@ -79,8 +79,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
         **kwargs,
     ) -> "TransformerLensReplacementModel":
-        """Create a TransformerLensReplacementModel from a HookedTransformerConfig
-        and a TranscoderSet.
+        """Create a TransformerLensReplacementModel from a given HookedTransformerConfig and TranscoderSet
 
         Args:
             config (HookedTransformerConfig): the config of the HookedTransformer
@@ -100,8 +99,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
         **kwargs,
     ) -> "TransformerLensReplacementModel":
-        """Create a TransformerLensReplacementModel from a HookedTransformer name
-        and a TranscoderSet.
+        """Create a TransformerLensReplacementModel from the name of HookedTransformer and TranscoderSet
 
         Args:
             model_name (str): the name of the pretrained HookedTransformer
@@ -397,8 +395,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         dummy_bos_token_id = next(filter(None, candidate_bos_token_ids))
         if dummy_bos_token_id is None:
             warnings.warn(
-                "No suitable special token found for BOS token replacement. "
-                "The first token will be ignored.",
+                "No suitable special token found for BOS token replacement. The first token will be ignored."
             )
         else:
             tokens = torch.cat([torch.tensor([dummy_bos_token_id], device=tokens.device), tokens])
@@ -464,9 +461,8 @@ class TransformerLensReplacementModel(HookedTransformer):
 
         Args:
             inputs (str | torch.Tensor): The inputs to intervene on
-            constrained_layers: (tuple[int,int] | range | None = None): Whether to freeze
-                attention, LayerNorm, and MLPs within a specified layer range. Defaults
-                to None.
+            constrained_layers: (tuple[int,int] | range | None = None): Whether to freeze not just attention, but also
+                LayerNorm and MLPs, at the specified layer range. Defaults to None.
 
         Returns:
             list[tuple[str, Callable]]: The freeze hooks needed to run the desired intervention.
@@ -567,10 +563,10 @@ class TransformerLensReplacementModel(HookedTransformer):
             input (_type_): the input prompt to intervene on
             intervention_dict (list[Intervention]): A list of interventions to perform, formatted as
                 a list of (layer, position, feature_idx, value)
-            constrained_layers (range | tuple | None): Whether to apply interventions only
-                to a certain layer range. Mostly applicable to CLTs. If the given range
-                includes all model layers, we also freeze LayerNorm denominators to compute
-                direct effects. None means no constraints (iterative patching).
+            constrained_layers (range | tuple | None): whether to apply interventions only to a certain range.
+                Mostly applicable to CLTs. If the given range includes all model layers,
+                we also freeze layernorm denominators, computing direct effects. None means no
+                constraints (iterative patching)
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for
                 testing purposes, as attribution predicts the change in pre-activation
@@ -730,20 +726,20 @@ class TransformerLensReplacementModel(HookedTransformer):
         sparse: bool = False,
         return_activations: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Given the input and a dictionary of features to intervene on, this performs
-        the intervention and returns logits and feature activations. If `freeze_attention`
-        or `constrained_layers` is True, attention patterns, MLPs and LayerNorms may be
-        frozen. When `constrained_layers` is set, effects do not propagate through those
-        layers (useful for CLTs). Otherwise, effects propagate through transcoders and
-        LayerNorms.
+        """Given the input, and a dictionary of features to intervene on, performs the
+        intervention, and returns the logits and feature activations. If freeze_attention or
+        constrained_layers is True, attention patterns will be frozen, along with MLPs and
+        LayerNorms. If constrained_layers is set, the effects of intervention will not propagate
+        through the constrained layers, and CLTs will write only to those layers. Otherwise, the
+        effects of the intervention will propagate through transcoders / LayerNorms
 
         Args:
             input (_type_): the input prompt to intervene on
             interventions (list[tuple[int, int, slice | torch.Tensor], int,
                 int | torch.Tensor]): A list of interventions to perform, formatted as
                 a list of (layer, position, feature_idx, value)
-            constrained_layers (range | tuple | None): Whether to apply interventions only
-                to a specific range. Mostly applicable to CLTs.
+            constrained_layers (range | tuple | None): whether to apply interventions only to a certain range.
+                Mostly applicable to CLTs.
             freeze_attention (bool): whether to freeze all attention patterns an layernorms
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for
@@ -810,21 +806,18 @@ class TransformerLensReplacementModel(HookedTransformer):
         This function accepts all kwargs valid for HookedTransformer.generate(). Note that
         freeze_attention applies only to the first token generated.
 
-        Note that if `kv_cache` is True (default), generation will be faster because
-        the model caches KV pairs and only processes the new token per step. If
-        `kv_cache` is False, the model does a full forward pass across all tokens.
-        Due to numerical precision, logits/activations from
-        `feature_intervention_generate(...)` may differ from `feature_intervention(...)`
-        unless `kv_cache` is False.
+        Note that if kv_cache is True (default), generation will be faster, as the model will cache the KVs, and only
+        process the one new token per step; if it is False, the model will generate by doing a full forward pass across
+        all tokens. Note that due to numerical precision issues, you are only guaranteed that the logits / activations of
+        model.feature_intervention_generate(s, ...) are equivalent to model.feature_intervention(s, ...) if kv_cache is False.
 
         Args:
             input (_type_): the input prompt to intervene on
             interventions (list[tuple[int, int, slice | torch.Tensor], int,
                 int | torch.Tensor]): A list of interventions to perform, formatted as
                 a list of (layer, position, feature_idx, value)
-            constrained_layers: (tuple[int,int] | range | None = None): Whether to freeze
-                MLPs/transcoders, attention patterns, and LayerNorm denominators for a
-                layer range. This only applies to the first token generated.
+            constrained_layers: (tuple[int,int] | range | None = None): whether to freeze all MLPs/transcoders /
+                attn patterns / layernorm denominators. This will only apply to the very first token generated.
             freeze_attention (bool): whether to freeze all attention patterns.
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for

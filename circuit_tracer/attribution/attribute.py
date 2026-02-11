@@ -1,9 +1,5 @@
 """
-Unified attribution interface that routes to the correct backend implementation.
-
-This module provides a unified entry point for computing attribution graphs,
-automatically dispatching to either the TransformerLens or NNSight implementation
-based on the backend type of the provided ReplacementModel.
+Unified attribution interface that routes to the correct implementation based on the ReplacementModel backend.
 """
 
 from collections.abc import Sequence

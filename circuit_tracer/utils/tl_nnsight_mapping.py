@@ -4,21 +4,18 @@ from typing import Any, Literal
 
 @dataclass
 class TransformerLens_NNSight_Mapping:
-    """Mapping specifying important locations in NNSight models, as well as mapping
-    from TL Hook Points to NNSight locations"""
+    """Mapping specifying important locations in NNSight models, as well as mapping from TL Hook Points to NNSight locations"""
 
     model_architecture: str  # HuggingFace model architecture
     attention_location_pattern: str  # Location of the attention patterns
     layernorm_scale_location_patterns: list[str]  # Location of the Layernorm denominators
-    # Location immediately before logits (location from which we will attribute for logit tokens)
-    pre_logit_location: str
-    # Location of the embedding Module (location to which we will attribute for embeddings)
-    embed_location: str
+    pre_logit_location: str  # Location immediately before the logits (the location from which we will attribute for logit tokens)
+    embed_location: str  # Location of the embedding Module (the location to which we will attribute for embeddings)
     embed_weight: str  # Location of the embedding weight matrix
     unembed_weight: str  # Location of the unembedding weight matrix
-    # Mapping from (TransformerLens Hook) to a tuple representing an NNSight Envoy location, and
-    #  whether we want its input or output
-    feature_hook_mapping: dict[str, tuple[str, Literal["input", "output"]]]
+    feature_hook_mapping: dict[
+        str, tuple[str, Literal["input", "output"]]
+    ]  # Mapping from (TransformerLens Hook) to a tuple representing an NNSight Envoy location, and whether we want its input or output
 
 
 # Create an instance with the original configuration values
@@ -167,8 +164,7 @@ def get_mapping(model_architecture: str) -> TransformerLens_NNSight_Mapping:
     """Get the TransformerLens-NNSight mapping for a given model architecture.
 
     Args:
-        model_architecture: The model architecture name (e.g., 'Gemma2ForCausalLM',
-        'Llama2ForCausalLM')
+        model_architecture: The model architecture name (e.g., 'Gemma2ForCausalLM', 'Llama2ForCausalLM')
 
     Returns:
         TransformerLens_NNSight_Mapping: The mapping configuration for the specified architecture
@@ -242,10 +238,8 @@ def convert_nnsight_config_to_transformerlens(config):
     """Convert NNsight config to TransformerLens config format.
 
     Args:
-        config: NNsight config object or UnifiedConfig (pass-through) or HookedTransformerConfig
-
-    Returns:
-        UnifiedConfig: A unified configuration object
+        config: NNsight config object
+        return_unified: If True, return UnifiedConfig instead of HookedTransformerConfig
     """
     # If already a UnifiedConfig, return as-is
     if isinstance(config, UnifiedConfig):

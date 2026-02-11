@@ -69,7 +69,7 @@ class Graph:
             cfg: The cfg of the model.
             selected_features (torch.Tensor): Indices into active_features for selected nodes.
             activation_values (torch.Tensor): Activation values for selected features.
-            scan (Optional[Union[str,List[str]]], optional): The identifier of the
+            scan (Union[str,List[str]] | None, optional): The identifier of the
                 transcoders used in the graph. Without a scan, the graph cannot be uploaded
                 (since we won't know what transcoders were used). Defaults to None
             attribution_targets: Attribution targets container. When provided,
