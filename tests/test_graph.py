@@ -192,7 +192,7 @@ def test_graph_with_tensor_logit_targets():
     assert graph_tensor.logit_targets[2].token_str == ""
 
     # Verify properties work
-    assert graph_tensor.vocab_indices == [262, 290, 314]
+    assert graph_tensor.logit_token_ids.tolist() == [262, 290, 314]
     assert torch.equal(graph_tensor.logit_token_ids, torch.tensor([262, 290, 314]))
 
     # Test with LogitTarget list format (current)
@@ -212,8 +212,8 @@ def test_graph_with_tensor_logit_targets():
         activation_values=torch.tensor([1.5]),
     )
 
-    # Verify both formats produce same vocab_indices
-    assert graph_tensor.vocab_indices == graph_list.vocab_indices
+    # Verify both formats produce same logit_token_ids
+    assert torch.equal(graph_tensor.logit_token_ids, graph_list.logit_token_ids)
     assert graph_tensor.vocab_size == graph_list.vocab_size
 
 
@@ -286,7 +286,7 @@ def test_graph_serialization_with_logit_targets(logit_targets_input, expected_to
         loaded_graph = Graph.from_pt(tmp_path)
 
         # Verify loaded graph has correct data
-        assert loaded_graph.vocab_indices == [262, 290, 314]
+        assert loaded_graph.logit_token_ids.tolist() == [262, 290, 314]
         assert loaded_graph.vocab_size == 50257
         assert torch.equal(loaded_graph.logit_token_ids, torch.tensor([262, 290, 314]))
         assert torch.equal(loaded_graph.logit_probabilities, torch.tensor([0.5, 0.3, 0.2]))
@@ -352,7 +352,7 @@ def test_graph_from_pt_legacy_tensor_format():
         assert loaded_graph.logit_targets[1].vocab_idx == 290
         assert loaded_graph.logit_targets[2].vocab_idx == 314
         assert loaded_graph.logit_targets[0].token_str == ""
-        assert loaded_graph.vocab_indices == [262, 290, 314]
+        assert loaded_graph.logit_token_ids.tolist() == [262, 290, 314]
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)

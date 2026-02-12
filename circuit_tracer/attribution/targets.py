@@ -15,7 +15,6 @@ Key concepts:
 from collections.abc import Sequence
 from typing import NamedTuple
 import logging
-import warnings
 
 import torch
 
@@ -151,17 +150,8 @@ class AttributionTargets:
         return self.tokenizer.vocab_size
 
     @property
-    def vocab_indices(self) -> list[int]:
-        """All vocabulary indices including virtual indices (>= vocab_size).
-
-        Returns:
-            List of vocabulary indices
-        """
-        return [target.vocab_idx for target in self.logit_targets]
-
-    @property
     def token_ids(self) -> torch.Tensor:
-        """Tensor of vocabulary indices.
+        """Tensor of vocabulary indices (including virtual indices >= vocab_size).
 
         Returns a torch.Tensor of vocab indices on the same device as other tensors,
         suitable for indexing into logit vectors or embeddings.
@@ -170,7 +160,9 @@ class AttributionTargets:
             torch.Tensor: Long tensor of vocabulary indices
         """
         return torch.tensor(
-            self.vocab_indices, dtype=torch.long, device=self.logit_probabilities.device
+            [target.vocab_idx for target in self.logit_targets],
+            dtype=torch.long,
+            device=self.logit_probabilities.device,
         )
 
     def to(self, device: str | torch.device) -> "AttributionTargets":
@@ -299,12 +291,12 @@ class AttributionTargets:
             if not ids:
                 raise ValueError(f"String token {token_str!r} encoded to empty token sequence.")
             if len(ids) > 1:
-                warnings.warn(
-                    f"String token {token_str!r} encoded to {len(ids)} tokens; "
-                    f"using only the last token (index {ids[-1]}). "
-                    f"Consider providing single-token strings for more predictable behavior."
+                raise ValueError(
+                    f"String token {token_str!r} encoded to {len(ids)} tokens "
+                    f"(IDs: {ids}). Each string must map to exactly one token. "
+                    f"Consider providing single-token strings."
                 )
-            token_id = ids[-1]
+            token_id = ids[0]
             assert 0 <= token_id < vocab_size, (
                 f"Token {token_str!r} resolved to index {token_id}, "
                 f"out of vocabulary range [0, {vocab_size})"

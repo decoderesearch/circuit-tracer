@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 import warnings
 
 import torch
@@ -13,9 +13,6 @@ from circuit_tracer.utils.tl_nnsight_mapping import (
 )
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.attribution.targets import LogitTarget
-
-if TYPE_CHECKING:
-    from circuit_tracer.attribution.targets import AttributionTargets
 
 
 class Graph:
@@ -41,10 +38,9 @@ class Graph:
         cfg,
         selected_features: torch.Tensor,
         activation_values: torch.Tensor,
+        logit_targets: list[LogitTarget],
+        logit_probabilities: torch.Tensor,
         scan: str | list[str] | None = None,
-        attribution_targets: AttributionTargets | None = None,
-        logit_targets: list[LogitTarget] | None = None,
-        logit_probabilities: torch.Tensor | None = None,
         vocab_size: int | None = None,
     ):
         """
@@ -69,35 +65,16 @@ class Graph:
             cfg: The cfg of the model.
             selected_features (torch.Tensor): Indices into active_features for selected nodes.
             activation_values (torch.Tensor): Activation values for selected features.
+            logit_targets: List of LogitTarget records describing each logit target.
+            logit_probabilities: Tensor of logit target probabilities/weights.
             scan (Union[str,List[str]] | None, optional): The identifier of the
                 transcoders used in the graph. Without a scan, the graph cannot be uploaded
                 (since we won't know what transcoders were used). Defaults to None
-            attribution_targets: Attribution targets container. When provided,
-                logit_targets, logit_probabilities, and vocab_size are extracted from it.
-            logit_targets: List of LogitTarget records. Required if attribution_targets
-                is not provided.
-            logit_probabilities: Logit probabilities. Required if attribution_targets
-                is not provided.
             vocab_size: Vocabulary size. If not provided, defaults to cfg.d_vocab.
         """
-        if attribution_targets is not None:
-            if logit_targets is not None or logit_probabilities is not None:
-                raise ValueError(
-                    "Cannot specify both attribution_targets and "
-                    "(logit_targets, logit_probabilities). Use one or the other."
-                )
-            self.logit_targets = attribution_targets.logit_targets
-            self.logit_probabilities = attribution_targets.logit_probabilities
-            self.vocab_size = attribution_targets.vocab_size
-        elif logit_targets is not None and logit_probabilities is not None:
-            self.logit_targets = logit_targets
-            self.logit_probabilities = logit_probabilities
-            self.vocab_size = vocab_size if vocab_size is not None else cfg.d_vocab
-        else:
-            raise ValueError(
-                "Must provide either attribution_targets or both logit_targets and "
-                "logit_probabilities"
-            )
+        self.logit_targets = logit_targets
+        self.logit_probabilities = logit_probabilities
+        self.vocab_size = vocab_size if vocab_size is not None else cfg.d_vocab
 
         self.input_string = input_string
         self.adjacency_matrix = adjacency_matrix
@@ -124,11 +101,6 @@ class Graph:
         self.logit_probabilities = self.logit_probabilities.to(device)
 
     @property
-    def vocab_indices(self) -> list[int]:
-        """All vocabulary indices."""
-        return [target.vocab_idx for target in self.logit_targets]
-
-    @property
     def logit_token_ids(self) -> torch.Tensor:
         """Tensor of logit target token IDs.
 
@@ -138,7 +110,9 @@ class Graph:
             torch.Tensor: Long tensor of vocabulary indices
         """
         return torch.tensor(
-            self.vocab_indices, dtype=torch.long, device=self.logit_probabilities.device
+            [target.vocab_idx for target in self.logit_targets],
+            dtype=torch.long,
+            device=self.logit_probabilities.device,
         )
 
     @property

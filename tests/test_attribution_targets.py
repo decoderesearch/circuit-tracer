@@ -405,8 +405,8 @@ def test_attribution_targets_tokens_property(mock_data):
     assert tokens == ["arbitrary", "custom_func"]
 
 
-def test_attribution_targets_vocab_indices(mock_data):
-    """Test vocab_indices property for tuple targets (virtual indices)."""
+def test_attribution_targets_virtual_token_ids(mock_data):
+    """Test token_ids property for tuple targets (virtual indices)."""
     logits, unembed_proj, tokenizer = mock_data
     vocab_size = tokenizer.vocab_size
 
@@ -422,7 +422,7 @@ def test_attribution_targets_vocab_indices(mock_data):
     )
 
     expected = [vocab_size + 0, vocab_size + 1, vocab_size + 2]
-    assert targets.vocab_indices == expected
+    assert targets.token_ids.tolist() == expected
 
 
 def test_attribution_targets_token_ids_real(mock_data):
@@ -477,8 +477,8 @@ def test_attribution_targets_utility_methods(mock_data, test_method, expected_va
 # === Multi-token encoding tests ===
 
 
-def test_attribution_targets_multi_token_warning(mock_data):
-    """Test that multi-token strings trigger a warning."""
+def test_attribution_targets_multi_token_error(mock_data):
+    """Test that multi-token strings raise a ValueError."""
     logits, unembed_proj, tokenizer = mock_data
 
     # Mock tokenizer to return multi-token encoding for a specific string
@@ -491,17 +491,13 @@ def test_attribution_targets_multi_token_warning(mock_data):
 
     tokenizer.encode = multi_token_encode
 
-    with pytest.warns(UserWarning, match="encoded to 3 tokens"):
-        targets = AttributionTargets(
+    with pytest.raises(ValueError, match="encoded to 3 tokens"):
+        AttributionTargets(
             attribution_targets=["multi_token_string"],
             logits=logits,
             unembed_proj=unembed_proj,
             tokenizer=tokenizer,
         )
-
-    # Verify it used the last token
-    assert len(targets) == 1
-    assert targets.logit_targets[0].vocab_idx == 30
 
     # Restore original encode
     tokenizer.encode = original_encode
@@ -656,127 +652,6 @@ def _cfg_backend(backend: str):
     return model, n_layers_range, unembed_proj
 
 
-def _run_custom_target_correctness(backend: str):
-    """Backend-agnostic logic for custom target correctness test.
-
-    1. Build a CustomTarget logit(x) - logit(y)
-    2. Run attribution using that custom target
-    3. Find top attributed features via first-order adjacency scores
-    4. Ablate those features → verify logit diff magnitude decreases
-    5. Amplify those features (10x) → verify logit diff magnitude increases
-    6. Verify unrelated logits are not dramatically affected
-
-    NOTE: All logit comparisons use ``zero_softcap()`` so that baseline and
-    intervention logits live in the same (unsoftcapped) space.  Without this,
-    Gemma-2's ``output_logits_soft_cap`` compresses baseline logits, making
-    direct comparison with unsoftcapped intervention logits invalid.
-    """
-
-    prompt = "The capital of the state containing Dallas is"
-    token_x, token_y = "▁Austin", "▁Dallas"
-    unrelated_tokens = ["▁banana", "▁pillow"]  # for stability check
-
-    model, n_layers_range, _ = _cfg_backend(backend)
-    custom_target, idx_x, idx_y = _build_custom_diff_target(
-        model, prompt, token_x, token_y, backend
-    )
-    assert model.tokenizer is not None
-    unrelated_indices = [
-        model.tokenizer.encode(tok, add_special_tokens=False)[-1] for tok in unrelated_tokens
-    ]
-
-    graph = attribute(prompt, model, attribution_targets=[custom_target], batch_size=256)
-
-    # Validate graph structure
-    assert len(graph.logit_targets) == 1
-    assert graph.logit_targets[0].token_str == custom_target.token_str
-    # Virtual index (custom target uses index >= vocab_size)
-    assert graph.logit_targets[0].vocab_idx >= graph.vocab_size
-
-    # Get baseline logits w/o softcap
-    input_ids = model.ensure_tokenized(prompt)
-    with torch.no_grad(), model.zero_softcap():
-        baseline_logits, _ = model.get_activations(input_ids)
-    baseline_logits = baseline_logits.squeeze(0)[-1]
-    baseline_x = baseline_logits[idx_x].item()
-    baseline_y = baseline_logits[idx_y].item()
-    baseline_diff = baseline_x - baseline_y
-    baseline_unrelated = [baseline_logits[idx].item() for idx in unrelated_indices]
-
-    # Get top features from attribution graph (by first-order adjacency scores)
-    top_features = _get_top_features(graph, n=5)
-
-    ablation_interventions = [(layer, pos, feat_idx, 0.0) for layer, pos, feat_idx in top_features]
-
-    with model.zero_softcap():
-        ablated_logits, _ = model.feature_intervention(
-            input_ids,
-            ablation_interventions,
-            constrained_layers=n_layers_range,
-            return_activations=False,
-        )
-    ablated_logits = ablated_logits.squeeze(0)[-1]
-    ablated_x = ablated_logits[idx_x].item()
-    ablated_y = ablated_logits[idx_y].item()
-    ablated_diff = ablated_x - ablated_y
-    ablated_unrelated = [ablated_logits[idx].item() for idx in unrelated_indices]
-
-    # === Amplification by 10x ===
-    # Get pre-activation feature values for amplification targets
-    with torch.no_grad():
-        _, act_cache = model.get_activations(input_ids, apply_activation_function=False)
-
-    amplify_interventions = [
-        (layer, pos, feat_idx, act_cache[layer, pos, feat_idx].item() * 10.0)
-        for layer, pos, feat_idx in top_features
-    ]
-
-    with model.zero_softcap():
-        amplified_logits, _ = model.feature_intervention(
-            input_ids,
-            amplify_interventions,
-            constrained_layers=n_layers_range,
-            return_activations=False,
-        )
-    amplified_logits = amplified_logits.squeeze(0)[-1]
-    amplified_x = amplified_logits[idx_x].item()
-    amplified_y = amplified_logits[idx_y].item()
-    amplified_diff = amplified_x - amplified_y
-    amplified_unrelated = [amplified_logits[idx].item() for idx in unrelated_indices]
-
-    # === Directional assertions ===
-    # The custom target direction is logit(x) - logit(y), so baseline_diff > 0.
-    # Ablating top features that contribute to this direction should decrease the diff.
-    # Amplifying those features should increase the diff.
-    assert abs(ablated_diff) < abs(baseline_diff), (
-        f"Ablation of top features should decrease |logit diff|: "
-        f"|baseline_diff|={abs(baseline_diff):.4f}, |ablated_diff|={abs(ablated_diff):.4f}"
-    )
-    assert abs(amplified_diff) > abs(baseline_diff), (
-        f"Amplification of top features should increase |logit diff|: "
-        f"|baseline_diff|={abs(baseline_diff):.4f}, |amplified_diff|={abs(amplified_diff):.4f}"
-    )
-
-    # === Unrelated logit stability check ===
-    # Verify that unrelated tokens are not affected more than the target tokens.
-    # The max individual target logit change provides an upper bound for unrelated changes.
-    max_target_abl_change = max(abs(ablated_x - baseline_x), abs(ablated_y - baseline_y))
-    max_target_amp_change = max(abs(amplified_x - baseline_x), abs(amplified_y - baseline_y))
-
-    for i, tok in enumerate(unrelated_tokens):
-        unrelated_abl_change = abs(ablated_unrelated[i] - baseline_unrelated[i])
-        unrelated_amp_change = abs(amplified_unrelated[i] - baseline_unrelated[i])
-
-        assert unrelated_abl_change < max_target_abl_change, (
-            f"Unrelated token '{tok}' ablation change ({unrelated_abl_change:.4f}) "
-            f"should be less than max target logit change ({max_target_abl_change:.4f})"
-        )
-        assert unrelated_amp_change < max_target_amp_change, (
-            f"Unrelated token '{tok}' amplification change ({unrelated_amp_change:.4f}) "
-            f"should be less than max target logit change ({max_target_amp_change:.4f})"
-        )
-
-
 def _run_attribution_format_consistency(backend: str):
     """Backend-agnostic logic for attribution target format consistency test.
 
@@ -878,6 +753,113 @@ def _run_attribution_format_consistency(backend: str):
     ), "Adjacency matrices differ between None and Sequence[CustomTarget] modes"
 
 
+def _run_custom_target_correctness(
+    backend: str,
+    n_samples: int = 20,
+    act_atol: float = 5e-4,
+    act_rtol: float = 1e-5,
+    logit_atol: float = 1e-4,
+    logit_rtol: float = 1e-3,
+):
+    """Verify custom target direction feature attribution driven interventions produce expected activation/logit changes
+
+    For a ``logit(x) − logit(y)`` custom direction, randomly samples features, doubles each feature's pre-activation
+    value (under constrained/frozen-layer conditions), and checks that both the activation changes and the custom
+    logit-difference change match the adjacency matrix predictions within acceptable tolerances.
+
+    * **Activation changes** match ``adjacency_matrix[:n_features, node]`` within act_atol/act_rtol.
+    * **Custom logit-difference change** matches the adjacency logit-node prediction within logit_atol/logit_rtol.
+
+    We use the same linear-regime conditions as our other attribution validation tests, e.g. ``verify_feature_edges``:
+
+    * ``constrained_layers=range(n_layers)`` — freezes all layer norms, MLPs, and attention, preventing non-linear
+      propagation.
+    * ``apply_activation_function=False`` — operates on pre-activation values.
+    * ``model.zero_softcap()`` — removes the final logit softcap.
+    * Intervention = doubling the pre-activation (delta = old_activation). Because the adjacency column already encodes
+      the full effect of the feature at its current activation level, doubling adds exactly one copy of the predicted
+      effect.
+    """
+    prompt = "The capital of the state containing Dallas is"
+    token_x, token_y = "▁Austin", "▁Dallas"
+
+    model, n_layers_range, _ = _cfg_backend(backend)
+    custom_target, idx_x, idx_y = _build_custom_diff_target(
+        model, prompt, token_x, token_y, backend
+    )
+
+    graph = attribute(prompt, model, attribution_targets=[custom_target], batch_size=256)
+
+    device = next(model.parameters()).device
+    adjacency_matrix = graph.adjacency_matrix.to(device)
+    active_features = graph.active_features.to(device)
+    n_features = active_features.size(0)
+    n_logits = len(graph.logit_targets)
+
+    # --- baseline (pre-activation, unsoftcapped) ---
+    with model.zero_softcap():
+        logits, activation_cache = model.get_activations(
+            graph.input_tokens, apply_activation_function=False
+        )
+    logits = logits.squeeze(0)
+
+    relevant_activations = activation_cache[
+        active_features[:, 0], active_features[:, 1], active_features[:, 2]
+    ]
+    baseline_logit_diff = logits[-1, idx_x] - logits[-1, idx_y]
+
+    # --- per-feature exact checks ---
+    random_order = torch.randperm(n_features)
+    chosen_nodes = random_order[: min(n_samples, n_features)]
+
+    for chosen_node in chosen_nodes:
+        layer, pos, feat_idx = active_features[chosen_node].tolist()
+        old_activation = activation_cache[layer, pos, feat_idx]
+        new_activation = old_activation * 2
+
+        expected_effects = adjacency_matrix[:, chosen_node]
+        expected_act_diff = expected_effects[:n_features]
+        expected_logit_diff = expected_effects[-n_logits:]  # (1,) for single target
+
+        with model.zero_softcap():
+            new_logits, new_act_cache = model.feature_intervention(
+                graph.input_tokens,
+                [(layer, pos, feat_idx, new_activation)],
+                constrained_layers=n_layers_range,
+                apply_activation_function=False,
+            )
+        new_logits = new_logits.squeeze(0)
+
+        # -- activation check --
+        assert new_act_cache is not None
+        new_relevant_activations = new_act_cache[
+            active_features[:, 0], active_features[:, 1], active_features[:, 2]
+        ]
+        assert torch.allclose(
+            new_relevant_activations,
+            relevant_activations + expected_act_diff,
+            atol=act_atol,
+            rtol=act_rtol,
+        ), (
+            f"Activation mismatch for feature ({layer}, {pos}, {feat_idx}): "
+            f"max diff = {(new_relevant_activations - relevant_activations - expected_act_diff).abs().max():.6e}"
+        )
+
+        # -- logit-difference check --
+        new_logit_diff = new_logits[-1, idx_x] - new_logits[-1, idx_y]
+        actual_logit_change = (new_logit_diff - baseline_logit_diff).unsqueeze(0)
+        assert torch.allclose(
+            actual_logit_change,
+            expected_logit_diff,
+            atol=logit_atol,
+            rtol=logit_rtol,
+        ), (
+            f"Logit-diff mismatch for feature ({layer}, {pos}, {feat_idx}): "
+            f"predicted={expected_logit_diff.item():.6e}, "
+            f"actual={actual_logit_change.item():.6e}"
+        )
+
+
 @pytest.fixture(autouse=False)
 def cleanup_cuda():
     yield
@@ -888,11 +870,11 @@ def cleanup_cuda():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.parametrize("backend", ["transformerlens", "nnsight"])
 def test_custom_target_correctness(cleanup_cuda, backend):
-    """Verify custom attribution targets produce valid results.
+    """Verify custom target direction feature attribution driven interventions produce expected activation/logit changes
 
-    Constructs logit(x) - logit(y) direction, runs attribution, then
-    verifies that ablating/amplifying top features changes the logit difference
-    in the expected directions.
+    For a ``logit(x) − logit(y)`` custom direction, randomly samples features, doubles each feature's pre-activation
+    value (under constrained/frozen-layer conditions), and checks that both the activation changes and the custom
+    logit-difference change match the adjacency matrix predictions within acceptable tolerances.
 
     Args:
         cleanup_cuda: Fixture for CUDA cleanup after test

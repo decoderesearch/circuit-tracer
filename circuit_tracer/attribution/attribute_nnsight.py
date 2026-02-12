@@ -287,7 +287,9 @@ def _run_attribution(
     graph = Graph(
         input_string=model.tokenizer.decode(input_ids),
         input_tokens=input_ids,
-        attribution_targets=targets,
+        logit_targets=targets.logit_targets,
+        logit_probabilities=targets.logit_probabilities,
+        vocab_size=targets.vocab_size,
         active_features=activation_matrix.indices().T,
         activation_values=activation_matrix.values(),
         selected_features=selected_features,
