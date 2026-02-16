@@ -166,6 +166,10 @@ class TransformerLensReplacementModel(HookedTransformer):
         self.backend = "transformerlens"
         transcoder_set.to(self.cfg.device, self.cfg.dtype)
 
+        # special case to zero out <bos><start_of_turn>user\n for gemmascope 2 (-it) transcoders  
+        gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
+        self.zero_positions = slice(0, 4) if gemma_3_it else slice(0, 1)
+
         self.transcoders = transcoder_set
         self.feature_input_hook = transcoder_set.feature_input_hook
         self.original_feature_output_hook = transcoder_set.feature_output_hook
@@ -288,7 +292,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             )
 
             if not append:
-                transcoder_acts[0] = 0
+                transcoder_acts[self.zero_positions] = 0
 
             if sparse:
                 transcoder_acts = transcoder_acts.to_sparse()
@@ -432,12 +436,12 @@ class TransformerLensReplacementModel(HookedTransformer):
         mlp_in_cache = torch.cat(list(mlp_in_cache.values()), dim=0)
         mlp_out_cache = torch.cat(list(mlp_out_cache.values()), dim=0)
 
-        attribution_data = self.transcoders.compute_attribution_components(mlp_in_cache)
+        attribution_data = self.transcoders.compute_attribution_components(mlp_in_cache, self.zero_positions)
 
         # Compute error vectors
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
-        error_vectors[:, 0] = 0
+        error_vectors[:, self.zero_positions] = 0
         token_vectors = self.W_E[tokens].detach()  # (n_pos, d_model)
 
         return AttributionContext(
