@@ -1,4 +1,5 @@
 import gc
+from contextlib import contextmanager
 
 import pytest
 import torch
@@ -8,10 +9,69 @@ from circuit_tracer.attribution.attribute_nnsight import attribute as attribute_
 from circuit_tracer.attribution.attribute_transformerlens import (
     attribute as attribute_transformerlens,
 )
+from circuit_tracer.attribution.targets import CustomTarget
+from circuit_tracer.graph import compute_node_influence
+from circuit_tracer.utils.demo_utils import get_unembed_vecs
 from tests.conftest import has_32gb
 
 # Mark all tests in this module as requiring 32GB+ VRAM
 pytestmark = [pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")]
+
+
+def _move_replacement_model(model, device):
+    """Move a ReplacementModel (and its transcoders) to *device*, updating internal refs.
+
+    Works for both NNSight and TransformerLens backends.
+    """
+    device = torch.device(device) if isinstance(device, str) else device
+
+    # Move model parameters
+    model.to(device)
+
+    # Move transcoders — NNSight wraps them in an Envoy so .to() only takes device
+    try:
+        model.transcoders.to(device, torch.float32)
+    except TypeError:
+        model.transcoders.to(device)
+
+    # Update stale tensor references left on the NNSight model instance.
+    # `.to()` replaces Parameter tensors inside the module but external refs
+    # (e.g. embed_weight, unembed_weight) still point at the old device.
+    for attr in ("embed_weight", "unembed_weight"):
+        t = getattr(model, attr, None)
+        if t is not None and t.device != device:
+            setattr(model, attr, t.to(device))
+
+    # Update backend-specific device tracking
+    if hasattr(model, "cfg") and hasattr(model.cfg, "device"):
+        # TransformerLens backend
+        model.cfg.device = device
+
+
+def _gpu_cleanup():
+    """Run garbage collection and free CUDA memory."""
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+@contextmanager
+def _swap_backend(model_off, model_on):
+    """Context manager: move *model_off* to CPU, move *model_on* to CUDA.
+
+    On exit (whether or not an exception occurred) restores *model_on* → CPU
+    and *model_off* → CUDA so the fixture is left in its original state.
+    """
+    _move_replacement_model(model_off, "cpu")
+    gc.collect()
+    torch.cuda.empty_cache()
+    _move_replacement_model(model_on, "cuda")
+    try:
+        yield
+    finally:
+        _move_replacement_model(model_on, "cpu")
+        gc.collect()
+        torch.cuda.empty_cache()
+        _move_replacement_model(model_off, "cuda")
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +88,22 @@ def models():
         "google/gemma-2-2b", "gemma", backend="nnsight", dtype=torch.float32
     )
     model_tl = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma", dtype=torch.float32)
+    return model_nnsight, model_tl
+
+
+@pytest.fixture(scope="module")
+def models_sequential():
+    """Load models for memory-constrained tests: NNSight on CUDA, TL on CPU.
+
+    Tests using this fixture should call ``_move_replacement_model`` to swap
+    which model lives on CUDA before each backend phase.
+    """
+    model_nnsight = ReplacementModel.from_pretrained(
+        "google/gemma-2-2b", "gemma", backend="nnsight", dtype=torch.float32
+    )
+    model_tl = ReplacementModel.from_pretrained(
+        "google/gemma-2-2b", "gemma", dtype=torch.float32, device=torch.device("cpu")
+    )
     return model_nnsight, model_tl
 
 
@@ -747,6 +823,441 @@ def test_setup_attribution_consistency(models, dallas_austin_prompt):
     )
 
 
+def _build_demo_custom_target(model, prompt, token_x, token_y, backend):
+    """Build a CustomTarget for logit(token_x) − logit(token_y).
+
+    Backend-agnostic helper matching the attribution_targets_demo pattern.
+    Uses ``get_unembed_vecs`` from ``demo_utils`` for unembedding extraction.
+    """
+    tokenizer = model.tokenizer
+    idx_x = tokenizer.encode(token_x, add_special_tokens=False)[-1]
+    idx_y = tokenizer.encode(token_y, add_special_tokens=False)[-1]
+
+    input_ids = model.ensure_tokenized(prompt)
+    with torch.no_grad():
+        logits, _ = model.get_activations(input_ids)
+    last_logits = logits.squeeze(0)[-1]
+
+    vec_x, vec_y = get_unembed_vecs(model, [idx_x, idx_y], backend)
+    diff_vec = vec_x - vec_y
+    probs = torch.softmax(last_logits, dim=-1)
+    diff_prob = max((probs[idx_x] - probs[idx_y]).abs().item(), 1e-6)
+
+    return (
+        CustomTarget(token_str=f"logit({token_x})-logit({token_y})", prob=diff_prob, vec=diff_vec),
+        idx_x,
+        idx_y,
+    )
+
+
+def _build_demo_semantic_target(model, prompt, group_a_tokens, group_b_tokens, label, backend):
+    """Build a CustomTarget for an abstract concept direction via vector rejection.
+
+    For each (capital, state) pair, project the capital vector onto the state
+    vector and subtract that projection, leaving pure "capital-ness".
+
+    Backend-agnostic helper matching the attribution_targets_demo pattern.
+    """
+    assert len(group_a_tokens) == len(group_b_tokens), (
+        "Groups must have equal length for paired differences"
+    )
+    tokenizer = model.tokenizer
+    ids_a = [tokenizer.encode(t, add_special_tokens=False)[-1] for t in group_a_tokens]
+    ids_b = [tokenizer.encode(t, add_special_tokens=False)[-1] for t in group_b_tokens]
+
+    vecs_a = get_unembed_vecs(model, ids_a, backend)
+    vecs_b = get_unembed_vecs(model, ids_b, backend)
+
+    # Vector rejection: for each pair, remove the state-direction component
+    residuals = []
+    for va, vb in zip(vecs_a, vecs_b):
+        va_f, vb_f = va.float(), vb.float()
+        proj = (va_f @ vb_f) / (vb_f @ vb_f) * vb_f
+        residuals.append((va_f - proj).to(va.dtype))
+
+    direction = torch.stack(residuals).mean(0)
+
+    input_ids = model.ensure_tokenized(prompt)
+    with torch.no_grad():
+        logits, _ = model.get_activations(input_ids)
+    probs = torch.softmax(logits.squeeze(0)[-1], dim=-1)
+    avg_prob = max(sum(probs[i].item() for i in ids_a) / len(ids_a), 1e-6)
+
+    return CustomTarget(token_str=label, prob=avg_prob, vec=direction)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attribution_targets_string(models_sequential, dallas_austin_prompt):
+    """Test attribution with Sequence[str] targets consistency between TL and NNSight."""
+    model_nnsight, model_tl = models_sequential
+    str_targets = ["▁Austin", "▁Dallas"]
+
+    # --- NNSight backend (already on CUDA from fixture) ---
+    graph_nnsight = attribute_nnsight(
+        dallas_austin_prompt,
+        model_nnsight,
+        attribution_targets=str_targets,
+        verbose=False,
+        batch_size=256,
+    )
+    nn_active = graph_nnsight.active_features.cpu()
+    nn_selected = graph_nnsight.selected_features.cpu()
+    nn_tokens = [t.token_str for t in graph_nnsight.logit_targets]
+    nn_adj = graph_nnsight.adjacency_matrix.cpu()
+    del graph_nnsight
+    _gpu_cleanup()
+
+    # --- TL backend ---
+    with _swap_backend(model_nnsight, model_tl):
+        graph_tl = attribute_transformerlens(
+            dallas_austin_prompt,
+            model_tl,
+            attribution_targets=str_targets,
+            verbose=False,
+            batch_size=128,
+        )
+        tl_active = graph_tl.active_features.cpu()
+        tl_selected = graph_tl.selected_features.cpu()
+        tl_tokens = [t.token_str for t in graph_tl.logit_targets]
+        tl_adj = graph_tl.adjacency_matrix.cpu()
+        del graph_tl
+        _gpu_cleanup()
+
+    # --- Compare CPU tensors ---
+    assert (nn_active == tl_active).all(), (
+        "String-target active features don't match between backends"
+    )
+    assert (nn_selected == tl_selected).all(), (
+        "String-target selected features don't match between backends"
+    )
+    assert nn_tokens == tl_tokens, f"String-target logit tokens differ: {nn_tokens} vs {tl_tokens}"
+    assert torch.allclose(nn_adj, tl_adj, atol=5e-4, rtol=1e-5), (
+        f"String-target adjacency matrices differ by max {(nn_adj - tl_adj).abs().max()}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attribution_targets_logit_diff(models_sequential, dallas_austin_prompt):
+    """Test attribution with CustomTarget consistency between TL and NNSight."""
+    model_nnsight, model_tl = models_sequential
+
+    # --- NNSight backend (already on CUDA from fixture) ---
+    custom_nnsight, _, _ = _build_demo_custom_target(
+        model_nnsight, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="nnsight"
+    )
+    graph_nnsight = attribute_nnsight(
+        dallas_austin_prompt,
+        model_nnsight,
+        attribution_targets=[custom_nnsight],
+        verbose=False,
+        batch_size=256,
+    )
+    nn_active = graph_nnsight.active_features.cpu()
+    nn_selected = graph_nnsight.selected_features.cpu()
+    nn_tokens = [t.token_str for t in graph_nnsight.logit_targets]
+    nn_adj = graph_nnsight.adjacency_matrix.cpu()
+    del graph_nnsight, custom_nnsight
+    _gpu_cleanup()
+
+    # --- TL backend ---
+    with _swap_backend(model_nnsight, model_tl):
+        custom_tl, _, _ = _build_demo_custom_target(
+            model_tl, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="transformerlens"
+        )
+        graph_tl = attribute_transformerlens(
+            dallas_austin_prompt,
+            model_tl,
+            attribution_targets=[custom_tl],
+            verbose=False,
+            batch_size=128,
+        )
+        tl_active = graph_tl.active_features.cpu()
+        tl_selected = graph_tl.selected_features.cpu()
+        tl_tokens = [t.token_str for t in graph_tl.logit_targets]
+        tl_adj = graph_tl.adjacency_matrix.cpu()
+        del graph_tl, custom_tl
+        _gpu_cleanup()
+
+    # --- Compare CPU tensors ---
+    assert (nn_active == tl_active).all(), (
+        "Custom-target active features don't match between backends"
+    )
+    assert (nn_selected == tl_selected).all(), (
+        "Custom-target selected features don't match between backends"
+    )
+    assert nn_tokens == tl_tokens, f"Custom-target logit tokens differ: {nn_tokens} vs {tl_tokens}"
+    assert torch.allclose(nn_adj, tl_adj, atol=5e-4, rtol=1e-5), (
+        f"Custom-target adjacency matrices differ by max {(nn_adj - tl_adj).abs().max()}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attribution_targets_logit_diff_intervention(models_sequential, dallas_austin_prompt):
+    """Test custom-target feature amplification consistency between TL and NNSight."""
+    model_nnsight, model_tl = models_sequential
+    n_top = 10
+
+    def _get_top_features(graph, n):
+        n_logits = len(graph.logit_targets)
+        n_features = len(graph.selected_features)
+        logit_weights = torch.zeros(
+            graph.adjacency_matrix.shape[0], device=graph.adjacency_matrix.device
+        )
+        logit_weights[-n_logits:] = graph.logit_probabilities
+        node_influence = compute_node_influence(graph.adjacency_matrix, logit_weights)
+        _, top_idx = torch.topk(node_influence[:n_features], min(n, n_features))
+        return [tuple(graph.active_features[graph.selected_features[i]].tolist()) for i in top_idx]
+
+    # --- NNSight backend (already on CUDA from fixture) ---
+    custom_nnsight, idx_x_nn, idx_y_nn = _build_demo_custom_target(
+        model_nnsight, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="nnsight"
+    )
+    graph_nnsight = attribute_nnsight(
+        dallas_austin_prompt,
+        model_nnsight,
+        attribution_targets=[custom_nnsight],
+        verbose=False,
+        batch_size=256,
+    )
+    top_feats_nn = _get_top_features(graph_nnsight, n_top)
+    del graph_nnsight, custom_nnsight
+    _gpu_cleanup()
+
+    input_ids_nn = model_nnsight.ensure_tokenized(dallas_austin_prompt)
+    orig_logits_nn, acts_nn = model_nnsight.get_activations(input_ids_nn, sparse=True)
+
+    interv_nn = [(ly, p, f, 10.0 * acts_nn[ly, p, f]) for (ly, p, f) in top_feats_nn]
+    new_logits_nn, _ = model_nnsight.feature_intervention(input_ids_nn, interv_nn)
+
+    orig_gap_nn = (
+        (orig_logits_nn.squeeze(0)[-1, idx_x_nn] - orig_logits_nn.squeeze(0)[-1, idx_y_nn])
+        .cpu()
+        .item()
+    )
+    new_gap_nn = (
+        (new_logits_nn.squeeze(0)[-1, idx_x_nn] - new_logits_nn.squeeze(0)[-1, idx_y_nn])
+        .cpu()
+        .item()
+    )
+    del orig_logits_nn, acts_nn, new_logits_nn
+    _gpu_cleanup()
+
+    # --- TL backend ---
+    with _swap_backend(model_nnsight, model_tl):
+        custom_tl, idx_x_tl, idx_y_tl = _build_demo_custom_target(
+            model_tl, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="transformerlens"
+        )
+        graph_tl = attribute_transformerlens(
+            dallas_austin_prompt,
+            model_tl,
+            attribution_targets=[custom_tl],
+            verbose=False,
+            batch_size=128,
+        )
+        top_feats_tl = _get_top_features(graph_tl, n_top)
+        del graph_tl, custom_tl
+        _gpu_cleanup()
+
+        input_ids_tl = model_tl.ensure_tokenized(dallas_austin_prompt)
+        orig_logits_tl, acts_tl = model_tl.get_activations(input_ids_tl, sparse=True)
+
+        interv_tl = [(ly, p, f, 10.0 * acts_tl[ly, p, f]) for (ly, p, f) in top_feats_tl]
+        new_logits_tl, _ = model_tl.feature_intervention(input_ids_tl, interv_tl)
+
+        orig_gap_tl = (
+            (orig_logits_tl.squeeze(0)[-1, idx_x_tl] - orig_logits_tl.squeeze(0)[-1, idx_y_tl])
+            .cpu()
+            .item()
+        )
+        new_gap_tl = (
+            (new_logits_tl.squeeze(0)[-1, idx_x_tl] - new_logits_tl.squeeze(0)[-1, idx_y_tl])
+            .cpu()
+            .item()
+        )
+        del orig_logits_tl, acts_tl, new_logits_tl
+        _gpu_cleanup()
+
+    # --- Compare on CPU ---
+    assert new_gap_nn > orig_gap_nn, (
+        f"NNSight: amplification should widen gap, got {orig_gap_nn:.4f} -> {new_gap_nn:.4f}"
+    )
+    assert new_gap_tl > orig_gap_tl, (
+        f"TL: amplification should widen gap, got {orig_gap_tl:.4f} -> {new_gap_tl:.4f}"
+    )
+
+    assert abs(new_gap_nn - new_gap_tl) < 0.5, (
+        f"Post-intervention gaps differ too much: NNSight={new_gap_nn:.4f}, TL={new_gap_tl:.4f}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attribution_targets_semantic(models_sequential, dallas_austin_prompt):
+    """Test attribution with semantic concept CustomTarget consistency between TL and NNSight."""
+    model_nnsight, model_tl = models_sequential
+    capitals = ["▁Austin", "▁Sacramento", "▁Olympia", "▁Atlanta"]
+    states = ["▁Texas", "▁California", "▁Washington", "▁Georgia"]
+    label = "Concept: Capitals − States"
+
+    # --- NNSight backend (already on CUDA from fixture) ---
+    sem_nnsight = _build_demo_semantic_target(
+        model_nnsight, dallas_austin_prompt, capitals, states, label, backend="nnsight"
+    )
+    graph_nnsight = attribute_nnsight(
+        dallas_austin_prompt,
+        model_nnsight,
+        attribution_targets=[sem_nnsight],
+        verbose=False,
+        batch_size=256,
+    )
+    nn_active = graph_nnsight.active_features.cpu()
+    nn_selected = graph_nnsight.selected_features.cpu()
+    nn_tokens = [t.token_str for t in graph_nnsight.logit_targets]
+    nn_adj = graph_nnsight.adjacency_matrix.cpu()
+    del graph_nnsight, sem_nnsight
+    _gpu_cleanup()
+
+    # --- TL backend ---
+    with _swap_backend(model_nnsight, model_tl):
+        sem_tl = _build_demo_semantic_target(
+            model_tl, dallas_austin_prompt, capitals, states, label, backend="transformerlens"
+        )
+        graph_tl = attribute_transformerlens(
+            dallas_austin_prompt,
+            model_tl,
+            attribution_targets=[sem_tl],
+            verbose=False,
+            batch_size=128,
+        )
+        tl_active = graph_tl.active_features.cpu()
+        tl_selected = graph_tl.selected_features.cpu()
+        tl_tokens = [t.token_str for t in graph_tl.logit_targets]
+        tl_adj = graph_tl.adjacency_matrix.cpu()
+        del graph_tl, sem_tl
+        _gpu_cleanup()
+
+    # --- Compare CPU tensors ---
+    assert (nn_active == tl_active).all(), (
+        "Semantic-target active features don't match between backends"
+    )
+    assert (nn_selected == tl_selected).all(), (
+        "Semantic-target selected features don't match between backends"
+    )
+    assert nn_tokens == tl_tokens, (
+        f"Semantic-target logit tokens differ: {nn_tokens} vs {tl_tokens}"
+    )
+    assert torch.allclose(nn_adj, tl_adj, atol=5e-4, rtol=1e-5), (
+        f"Semantic-target adjacency matrices differ by max {(nn_adj - tl_adj).abs().max()}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attribution_targets_semantic_intervention(models_sequential, dallas_austin_prompt):
+    """Test semantic-target feature amplification consistency between TL and NNSight."""
+    model_nnsight, model_tl = models_sequential
+    n_top = 10
+    capitals = ["▁Austin", "▁Sacramento", "▁Olympia", "▁Atlanta"]
+    states = ["▁Texas", "▁California", "▁Washington", "▁Georgia"]
+    label = "Concept: Capitals − States"
+
+    def _get_top_features(graph, n):
+        n_logits = len(graph.logit_targets)
+        n_features = len(graph.selected_features)
+        logit_weights = torch.zeros(
+            graph.adjacency_matrix.shape[0], device=graph.adjacency_matrix.device
+        )
+        logit_weights[-n_logits:] = graph.logit_probabilities
+        node_influence = compute_node_influence(graph.adjacency_matrix, logit_weights)
+        _, top_idx = torch.topk(node_influence[:n_features], min(n, n_features))
+        return [tuple(graph.active_features[graph.selected_features[i]].tolist()) for i in top_idx]
+
+    # --- NNSight backend (already on CUDA from fixture) ---
+    sem_nnsight = _build_demo_semantic_target(
+        model_nnsight, dallas_austin_prompt, capitals, states, label, backend="nnsight"
+    )
+    idx_x_nn = model_nnsight.tokenizer.encode("▁Austin", add_special_tokens=False)[-1]
+    idx_y_nn = model_nnsight.tokenizer.encode("▁Dallas", add_special_tokens=False)[-1]
+
+    graph_nnsight = attribute_nnsight(
+        dallas_austin_prompt,
+        model_nnsight,
+        attribution_targets=[sem_nnsight],
+        verbose=False,
+        batch_size=256,
+    )
+    top_feats_nn = _get_top_features(graph_nnsight, n_top)
+    del graph_nnsight, sem_nnsight
+    _gpu_cleanup()
+
+    input_ids_nn = model_nnsight.ensure_tokenized(dallas_austin_prompt)
+    orig_logits_nn, acts_nn = model_nnsight.get_activations(input_ids_nn, sparse=True)
+
+    interv_nn = [(ly, p, f, 10.0 * acts_nn[ly, p, f]) for (ly, p, f) in top_feats_nn]
+    new_logits_nn, _ = model_nnsight.feature_intervention(input_ids_nn, interv_nn)
+
+    orig_gap_nn = (
+        (orig_logits_nn.squeeze(0)[-1, idx_x_nn] - orig_logits_nn.squeeze(0)[-1, idx_y_nn])
+        .cpu()
+        .item()
+    )
+    new_gap_nn = (
+        (new_logits_nn.squeeze(0)[-1, idx_x_nn] - new_logits_nn.squeeze(0)[-1, idx_y_nn])
+        .cpu()
+        .item()
+    )
+    del orig_logits_nn, acts_nn, new_logits_nn
+    _gpu_cleanup()
+
+    # --- TL backend ---
+    with _swap_backend(model_nnsight, model_tl):
+        sem_tl = _build_demo_semantic_target(
+            model_tl, dallas_austin_prompt, capitals, states, label, backend="transformerlens"
+        )
+        idx_x_tl = model_tl.tokenizer.encode("▁Austin", add_special_tokens=False)[-1]
+        idx_y_tl = model_tl.tokenizer.encode("▁Dallas", add_special_tokens=False)[-1]
+
+        graph_tl = attribute_transformerlens(
+            dallas_austin_prompt,
+            model_tl,
+            attribution_targets=[sem_tl],
+            verbose=False,
+            batch_size=128,
+        )
+        top_feats_tl = _get_top_features(graph_tl, n_top)
+        del graph_tl, sem_tl
+        _gpu_cleanup()
+
+        input_ids_tl = model_tl.ensure_tokenized(dallas_austin_prompt)
+        orig_logits_tl, acts_tl = model_tl.get_activations(input_ids_tl, sparse=True)
+
+        interv_tl = [(ly, p, f, 10.0 * acts_tl[ly, p, f]) for (ly, p, f) in top_feats_tl]
+        new_logits_tl, _ = model_tl.feature_intervention(input_ids_tl, interv_tl)
+
+        orig_gap_tl = (
+            (orig_logits_tl.squeeze(0)[-1, idx_x_tl] - orig_logits_tl.squeeze(0)[-1, idx_y_tl])
+            .cpu()
+            .item()
+        )
+        new_gap_tl = (
+            (new_logits_tl.squeeze(0)[-1, idx_x_tl] - new_logits_tl.squeeze(0)[-1, idx_y_tl])
+            .cpu()
+            .item()
+        )
+        del orig_logits_tl, acts_tl, new_logits_tl
+        _gpu_cleanup()
+
+    # --- Compare on CPU ---
+    assert new_gap_nn > orig_gap_nn, (
+        f"NNSight: semantic amplification should widen gap, got {orig_gap_nn:.4f} -> {new_gap_nn:.4f}"
+    )
+    assert new_gap_tl > orig_gap_tl, (
+        f"TL: semantic amplification should widen gap, got {orig_gap_tl:.4f} -> {new_gap_tl:.4f}"
+    )
+
+    assert abs(new_gap_nn - new_gap_tl) < 0.5, (
+        f"Semantic post-intervention gaps differ too much: NNSight={new_gap_nn:.4f}, TL={new_gap_tl:.4f}"
+    )
+
+
 def run_all_tests():
     """Run all tests when script is executed directly."""
     print("Loading models...")
@@ -903,9 +1414,31 @@ def run_all_tests():
     test_setup_attribution_consistency(models_fixture, dallas_austin)
     print("✓ Attribution setup consistency test passed")
 
+    print("\n=== Testing Attribution Targets Demo ===")
+
+    print("Running test_attribution_targets_string...")
+    test_attribution_targets_string(models_fixture, dallas_austin)
+    print("✓ Attribution targets string test passed")
+
+    print("Running test_attribution_targets_logit_diff...")
+    test_attribution_targets_logit_diff(models_fixture, dallas_austin)
+    print("✓ Attribution targets logit-diff test passed")
+
+    print("Running test_attribution_targets_logit_diff_intervention...")
+    test_attribution_targets_logit_diff_intervention(models_fixture, dallas_austin)
+    print("✓ Attribution targets logit-diff intervention test passed")
+
+    print("Running test_attribution_targets_semantic...")
+    test_attribution_targets_semantic(models_fixture, dallas_austin)
+    print("✓ Attribution targets semantic test passed")
+
+    print("Running test_attribution_targets_semantic_intervention...")
+    test_attribution_targets_semantic_intervention(models_fixture, dallas_austin)
+    print("✓ Attribution targets semantic intervention test passed")
+
     print("\n" + "=" * 70)
     print("All tutorial notebook tests passed! ✓")
-    print("Total tests run: 20")
+    print("Total tests run: 24")
     print("=" * 70)
 
 
