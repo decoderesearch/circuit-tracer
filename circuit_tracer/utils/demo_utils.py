@@ -7,6 +7,7 @@ from collections import namedtuple
 import torch
 from IPython.display import HTML, display
 
+from circuit_tracer.attribution.targets import CustomTarget
 from circuit_tracer.graph import compute_node_influence
 
 Feature = namedtuple("Feature", ["layer", "pos", "feature_idx"])
@@ -175,6 +176,67 @@ def display_top_features_comparison(
     body += "</div>"
 
     display(HTML(style + body))
+
+
+def display_attribution_config(
+    token_pairs: list[tuple[str, int]],
+    target_pairs: list[tuple[str, CustomTarget]],
+) -> None:
+    """Display token-mapping and custom-target summary tables.
+
+    Args:
+        token_pairs: List of ``(token_str, vocab_id)`` pairs for the Token Mappings table.
+        target_pairs: List of ``(kind_label, target)`` pairs for the Attribution Targets
+            table, where each ``target`` is a CustomTarget with ``.token_str`` and ``.prob`` attributes.
+    """
+    th_l = "padding:5px 14px 5px 6px; border-bottom:2px solid #888; text-align:left; white-space:nowrap"
+    th_r = "padding:5px 14px 5px 6px; border-bottom:2px solid #888; text-align:right; white-space:nowrap"
+    td_l = "padding:4px 14px 4px 6px; border-bottom:1px solid #ddd; text-align:left"
+    td_r = "padding:4px 14px 4px 6px; border-bottom:1px solid #ddd; text-align:right"
+
+    # ── Token Mappings ────────────────────────────────────────────────────────
+    token_rows = "".join(
+        "<tr>"
+        "<td style='" + td_l + "'><code>" + html.escape(tok) + "</code></td>"
+        "<td style='" + td_r + "'>" + str(vid) + "</td>"
+        "</tr>"
+        for tok, vid in token_pairs
+    )
+    display(
+        HTML(
+            "<b>Token Mappings</b>"
+            "<table style='border-collapse:collapse; font-size:0.9em; margin-top:4px'>"
+            "<thead><tr>"
+            "<th style='" + th_l + "'>Token</th>"
+            "<th style='" + th_r + "'>Vocab ID</th>"
+            "</tr></thead>"
+            "<tbody>" + token_rows + "</tbody>"
+            "</table>"
+        )
+    )
+
+    # ── Attribution Targets ───────────────────────────────────────────────────
+    target_rows = "".join(
+        "<tr>"
+        "<td style='" + td_l + "'>" + html.escape(kind) + "</td>"
+        "<td style='" + td_l + "'><code>" + html.escape(tgt.token_str) + "</code></td>"
+        "<td style='" + td_r + "'>" + f"{tgt.prob * 100:.3f}%" + "</td>"
+        "</tr>"
+        for kind, tgt in target_pairs
+    )
+    display(
+        HTML(
+            "<b style='margin-top:12px; display:block'>Attribution Targets</b>"
+            "<table style='border-collapse:collapse; font-size:0.9em; margin-top:4px'>"
+            "<thead><tr>"
+            "<th style='" + th_l + "'>Target</th>"
+            "<th style='" + th_l + "'>Label</th>"
+            "<th style='" + th_r + "'>Probability</th>"
+            "</tr></thead>"
+            "<tbody>" + target_rows + "</tbody>"
+            "</table>"
+        )
+    )
 
 
 def display_token_probs(
