@@ -974,6 +974,60 @@ def test_attribution_targets_string(models_cpu, dallas_austin_prompt):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attribution_targets_tensor(models_cpu, dallas_austin_prompt):
+    """Test attribution with torch.Tensor targets consistency between TL and NNSight.
+
+    Uses the same token IDs as the string-target test (pre-tokenized equivalent).
+    """
+    model_nnsight, model_tl = models_cpu
+    # Resolve token IDs for Austin and Dallas (same as string-target test)
+    tok = model_nnsight.tokenizer
+    idx_austin = tok.encode("▁Austin", add_special_tokens=False)[-1]
+    idx_dallas = tok.encode("▁Dallas", add_special_tokens=False)[-1]
+    tensor_targets = torch.tensor([idx_austin, idx_dallas])
+
+    # --- NNSight backend ---
+    with clean_cuda(model_nnsight):
+        graph_nnsight = attribute_nnsight(
+            dallas_austin_prompt,
+            model_nnsight,
+            attribution_targets=tensor_targets,
+            verbose=False,
+            batch_size=256,
+        )
+        nn_active = graph_nnsight.active_features.cpu()
+        nn_selected = graph_nnsight.selected_features.cpu()
+        nn_tokens = [t.token_str for t in graph_nnsight.logit_targets]
+        nn_adj = graph_nnsight.adjacency_matrix.cpu()
+
+    # --- TL backend ---
+    with clean_cuda(model_tl):
+        graph_tl = attribute_transformerlens(
+            dallas_austin_prompt,
+            model_tl,
+            attribution_targets=tensor_targets,
+            verbose=False,
+            batch_size=128,
+        )
+        tl_active = graph_tl.active_features.cpu()
+        tl_selected = graph_tl.selected_features.cpu()
+        tl_tokens = [t.token_str for t in graph_tl.logit_targets]
+        tl_adj = graph_tl.adjacency_matrix.cpu()
+
+    # --- Compare CPU tensors ---
+    assert (nn_active == tl_active).all(), (
+        "Tensor-target active features don't match between backends"
+    )
+    assert (nn_selected == tl_selected).all(), (
+        "Tensor-target selected features don't match between backends"
+    )
+    assert nn_tokens == tl_tokens, f"Tensor-target logit tokens differ: {nn_tokens} vs {tl_tokens}"
+    assert torch.allclose(nn_adj, tl_adj, atol=5e-4, rtol=1e-5), (
+        f"Tensor-target adjacency matrices differ by max {(nn_adj - tl_adj).abs().max()}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_attribution_targets_logit_diff(models_cpu, dallas_austin_prompt):
     """Test attribution with CustomTarget consistency between TL and NNSight."""
     model_nnsight, model_tl = models_cpu
