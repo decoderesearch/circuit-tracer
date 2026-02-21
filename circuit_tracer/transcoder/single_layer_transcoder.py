@@ -99,10 +99,10 @@ class SingleLayerTranscoder(nn.Module):
         """Dynamically load weights when accessed if lazy loading is enabled."""
 
         if name == "W_enc" and self.lazy_encoder and self.transcoder_path is not None:
-            with safe_open(self.transcoder_path, framework="pt", device=self.device.type) as f:
+            with safe_open(self.transcoder_path, framework="pt", device=str(self.device)) as f:
                 return f.get_tensor("W_enc").to(self.dtype)
         elif name == "W_dec" and self.lazy_decoder and self.transcoder_path is not None:
-            with safe_open(self.transcoder_path, framework="pt", device=self.device.type) as f:
+            with safe_open(self.transcoder_path, framework="pt", device=str(self.device)) as f:
                 return f.get_tensor("W_dec").to(self.dtype)
 
         return super().__getattr__(name)
@@ -114,7 +114,7 @@ class SingleLayerTranscoder(nn.Module):
 
         if isinstance(to_read, torch.Tensor):
             to_read = to_read.cpu()
-        with safe_open(self.transcoder_path, framework="pt", device=self.device.type) as f:
+        with safe_open(self.transcoder_path, framework="pt", device=str(self.device)) as f:
             return f.get_slice("W_dec")[to_read].to(self.dtype)
 
     def encode(self, input_acts, apply_activation_function: bool = True):
@@ -453,7 +453,7 @@ def load_relu_transcoder(
         device = get_default_device()
 
     param_dict = {}
-    with safe_open(path, framework="pt", device=device.type) as f:
+    with safe_open(path, framework="pt", device=str(device)) as f:
         for k in f.keys():
             if lazy_encoder and k == "W_enc":
                 continue

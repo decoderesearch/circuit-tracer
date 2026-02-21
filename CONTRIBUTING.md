@@ -2,9 +2,11 @@
 
 Thank you for your interest in contributing to circuit-tracer! We appreciate the community involvement we've seen so far and welcome contributions.
 
-## Important Notes
+## License
 
-### Maintenance Bandwidth
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE) that covers the project.
+
+## Maintenance Bandwidth
 
 We maintain this project on a **best-effort basis**.
 
@@ -36,12 +38,11 @@ We use `ruff check` and `ruff format` for code quality. When contributing:
 - Run `ruff check` and `ruff format` on your changes
 - Run existing tests to ensure nothing breaks
 - Check that relevant demo notebooks still execute correctly, particularly:
-
   - `demos/circuit_tracing_tutorial.ipynb`
   - `demos/attribute_demo.ipynb`
   - `demos/intervention_demo.ipynb`
 
-  ## Tests
+## Tests
 
 We use `pytest` for testing. When contributing:
 

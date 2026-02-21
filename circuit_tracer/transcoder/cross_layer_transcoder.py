@@ -143,8 +143,8 @@ class CrossLayerTranscoder(torch.nn.Module):
         if layer_id is not None:
             # Load single layer encoder
             enc_file = os.path.join(self.clt_path, f"W_enc_{layer_id}.safetensors")
-            with safe_open(enc_file, framework="pt", device=self.device.type) as f:
-                return f.get_tensor(f"W_enc_{layer_id}").to(self.dtype)
+            with safe_open(enc_file, framework="pt", device=str(self.device)) as f:
+                return f.get_tensor(f"W_enc_{layer_id}").to(dtype=self.dtype)
 
         # Load all encoder weights
         W_enc = torch.zeros(
@@ -156,8 +156,8 @@ class CrossLayerTranscoder(torch.nn.Module):
         )
         for i in range(self.n_layers):
             enc_file = os.path.join(self.clt_path, f"W_enc_{i}.safetensors")
-            with safe_open(enc_file, framework="pt", device=self.device.type) as f:
-                W_enc[i] = f.get_tensor(f"W_enc_{i}").to(self.dtype)
+            with safe_open(enc_file, framework="pt", device=str(self.device)) as f:
+                W_enc[i] = f.get_tensor(f"W_enc_{i}").to(dtype=self.dtype)
         return W_enc
 
     def encode(self, x):
@@ -223,14 +223,14 @@ class CrossLayerTranscoder(torch.nn.Module):
 
         if not self.lazy_decoder:
             assert self.W_dec is not None, "Decoder weights are not set"
-            return self.W_dec[layer_id][to_read].to(self.dtype)
+            return self.W_dec[layer_id][to_read].to(dtype=self.dtype)
 
         assert self.clt_path is not None, "CLT path is not set"
         path = os.path.join(self.clt_path, f"W_dec_{layer_id}.safetensors")
         if isinstance(to_read, torch.Tensor):
             to_read = to_read.cpu()
-        with safe_open(path, framework="pt", device=self.device.type) as f:
-            return f.get_slice(f"W_dec_{layer_id}")[to_read].to(self.dtype)
+        with safe_open(path, framework="pt", device=str(self.device)) as f:
+            return f.get_slice(f"W_dec_{layer_id}")[to_read].to(dtype=self.dtype)
 
     def select_decoder_vectors(self, features):
         if not features.is_sparse:
@@ -559,7 +559,7 @@ def _load_state_dict(
 
     # Get dimensions from first file
     dec_file = "W_enc_0.safetensors"
-    with safe_open(os.path.join(clt_path, dec_file), framework="pt", device=device.type) as f:
+    with safe_open(os.path.join(clt_path, dec_file), framework="pt", device=str(device)) as f:
         d_transcoder, d_model = f.get_slice("W_enc_0").get_shape()
         has_threshold = "threshold_0" in f.keys()
 
@@ -582,7 +582,7 @@ def _load_state_dict(
     # Load all layers
     for i in range(n_layers):
         enc_file = f"W_enc_{i}.safetensors"
-        with safe_open(os.path.join(clt_path, enc_file), framework="pt", device=device.type) as f:
+        with safe_open(os.path.join(clt_path, enc_file), framework="pt", device=str(device)) as f:
             b_dec[i] = f.get_tensor(f"b_dec_{i}").to(dtype)
             b_enc[i] = f.get_tensor(f"b_enc_{i}").to(dtype)
 
@@ -597,7 +597,7 @@ def _load_state_dict(
         # Load W_dec for this layer if not lazy
         if not lazy_decoder:
             dec_file = os.path.join(clt_path, f"W_dec_{i}.safetensors")
-            with safe_open(dec_file, framework="pt", device=device.type) as f:
+            with safe_open(dec_file, framework="pt", device=str(device)) as f:
                 state_dict[f"W_dec.{i}"] = f.get_tensor(f"W_dec_{i}").to(dtype)
 
     return state_dict
