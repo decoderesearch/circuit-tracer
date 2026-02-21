@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def load_graph_data(file_path) -> "Graph":
+def load_graph_data(file_path) -> Graph:
     """Load graph data from a PyTorch file."""
     from circuit_tracer.graph import Graph
 
@@ -30,7 +30,7 @@ def load_graph_data(file_path) -> "Graph":
     return graph
 
 
-def create_nodes(graph: "Graph", node_mask, tokenizer, cumulative_scores):
+def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
     """Create all nodes for the graph."""
     start_time = time.time()
 
@@ -82,7 +82,7 @@ def create_nodes(graph: "Graph", node_mask, tokenizer, cumulative_scores):
     return nodes
 
 
-def create_used_nodes_and_edges(graph: "Graph", nodes, edge_mask):
+def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
     """Filter to only used nodes and create edges."""
     start_time = time.time()
     edges = edge_mask.numpy()
@@ -116,7 +116,7 @@ def create_used_nodes_and_edges(graph: "Graph", nodes, edge_mask):
     return used_nodes, used_edges
 
 
-def build_model(graph: "Graph", used_nodes, used_edges, slug, scan, node_threshold, tokenizer):
+def build_model(graph: Graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer):
     """Build the full model object."""
     start_time = time.time()
 
@@ -159,7 +159,7 @@ def build_model(graph: "Graph", used_nodes, used_edges, slug, scan, node_thresho
 
 
 def create_graph_files(
-    graph_or_path: "Graph | str",
+    graph_or_path: Graph | str,
     slug: str,
     output_path,
     scan=None,

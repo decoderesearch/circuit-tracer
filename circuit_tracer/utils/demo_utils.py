@@ -1,3 +1,4 @@
+import gc
 import html
 import json
 import urllib.parse
@@ -6,7 +7,377 @@ from collections import namedtuple
 import torch
 from IPython.display import HTML, display
 
+from circuit_tracer.attribution.targets import CustomTarget
+from circuit_tracer.graph import compute_node_influence
+
 Feature = namedtuple("Feature", ["layer", "pos", "feature_idx"])
+
+
+def get_unembed_vecs(model, token_ids: list[int], backend: str) -> list[torch.Tensor]:
+    """Extract unembedding column vectors for the given token IDs.
+
+    Handles the orientation difference between TransformerLens (d_model, d_vocab)
+    and NNSight (d_vocab, d_model) unembedding matrices.
+
+    Args:
+        model: A ``ReplacementModel`` instance.
+        token_ids: Vocabulary indices whose unembed columns to extract.
+        backend: ``"transformerlens"`` or ``"nnsight"``.
+
+    Returns:
+        List of 1-D tensors, one per token ID, each of shape ``(d_model,)``.
+    """
+    unembed = model.unembed.W_U if backend == "transformerlens" else model.unembed_weight
+    d_vocab = model.tokenizer.vocab_size
+    if unembed.shape[0] == d_vocab:
+        return [unembed[tid] for tid in token_ids]
+    return [unembed[:, tid] for tid in token_ids]
+
+
+def cleanup_cuda() -> None:
+    """Run garbage collection and free CUDA cache."""
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def get_top_features(graph, n: int = 10) -> tuple[list[tuple[int, int, int]], list[float]]:
+    """Extract the top-N feature nodes from the graph by total multi-hop influence.
+
+    Uses ``compute_node_influence`` to rank features by their total effect
+    on *all* logit targets (direct + indirect paths), weighted by each
+    target's probability.
+
+    Args:
+        graph: A Graph object with ``adjacency_matrix``, ``selected_features``,
+            ``active_features``, ``logit_targets``, and ``logit_probabilities``.
+        n: Number of top features to return.
+
+    Returns:
+        Tuple of (features, scores) where *features* is a list of
+        ``(layer, pos, feature_idx)`` tuples and *scores* is the
+        corresponding influence values.
+    """
+    n_logits = len(graph.logit_targets)
+    n_features = len(graph.selected_features)
+
+    # Build logit weight vector
+    logit_weights = torch.zeros(
+        graph.adjacency_matrix.shape[0], device=graph.adjacency_matrix.device
+    )
+    logit_weights[-n_logits:] = graph.logit_probabilities
+
+    # Multi-hop influence across all logit targets
+    node_influence = compute_node_influence(graph.adjacency_matrix, logit_weights)
+    feature_influence = node_influence[:n_features]
+
+    top_k = min(n, n_features)
+    top_values, top_indices = torch.topk(feature_influence, top_k)
+
+    features = [
+        tuple(graph.active_features[graph.selected_features[i]].tolist()) for i in top_indices
+    ]
+    scores = top_values.tolist()
+    return features, scores
+
+
+def display_top_features_comparison(
+    feature_sets: dict[str, list[tuple[int, int, int]]],
+    scores_sets: dict[str, list[float]] | None = None,
+    neuronpedia_model: str | None = None,
+    neuronpedia_set: str = "gemmascope-transcoder-16k",
+):
+    """Display top features from multiple attribution configurations side by side.
+
+    Args:
+        feature_sets: Mapping from config label to list of ``(layer, pos, feat_idx)`` tuples.
+        scores_sets: Optional mapping from config label to list of attribution scores.
+            If ``None``, scores are omitted from the display.
+        neuronpedia_model: Neuronpedia model slug (e.g. ``"gemma-2-2b"``).
+            When provided, feature indices become clickable links.
+        neuronpedia_set: Neuronpedia set name (default ``"gemmascope-transcoder-16k"``).
+    """
+    labels = list(feature_sets.keys())
+    colors = ["#2471A3", "#27AE60", "#8E44AD", "#E67E22", "#C0392B", "#16A085"]
+
+    style = """
+    <style>
+    .features-cmp {
+        font-family: system-ui, -apple-system, sans-serif;
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+    .features-cmp .col {
+        flex: 1;
+        min-width: 220px;
+    }
+    .features-cmp .col-header {
+        font-weight: bold;
+        font-size: 14px;
+        padding: 4px 8px;
+        border-radius: 3px;
+        color: white;
+        margin-bottom: 6px;
+    }
+    .features-cmp table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+    .features-cmp th, .features-cmp td {
+        text-align: left;
+        padding: 3px 6px;
+        border: 1px solid rgba(150,150,150,0.5);
+    }
+    .features-cmp th {
+        background-color: rgba(200,200,200,0.3);
+        font-weight: bold;
+    }
+    .features-cmp .monospace { font-family: monospace; }
+    .features-cmp a.np-link {
+        color: inherit;
+        text-decoration: none;
+        border-bottom: 1px dashed rgba(150,150,150,0.6);
+    }
+    .features-cmp a.np-link:hover {
+        color: #2980B9;
+        border-bottom-style: solid;
+    }
+    </style>
+    """
+
+    body = '<div class="features-cmp">'
+    for i, label in enumerate(labels):
+        color = colors[i % len(colors)]
+        features = feature_sets[label]
+        scores = scores_sets.get(label) if scores_sets else None
+        body += '<div class="col">'
+        body += (
+            f'<div class="col-header" style="background-color: {color};">{html.escape(label)}</div>'
+        )
+        body += "<table><thead><tr><th>#</th><th>Node</th>"
+        if scores is not None:
+            body += "<th>Score</th>"
+        body += "</tr></thead><tbody>"
+        for j, (layer, pos, feat_idx) in enumerate(features):
+            score_cell = f"<td>{scores[j]:.4f}</td>" if scores is not None else ""
+            if neuronpedia_model is not None:
+                np_url = (
+                    f"https://www.neuronpedia.org/{neuronpedia_model}/"
+                    f"{layer}-{neuronpedia_set}/{feat_idx}"
+                )
+                feat_link = f'<a class="np-link" href="{np_url}" target="_blank" title="View on Neuronpedia">{feat_idx}</a>'
+            else:
+                feat_link = str(feat_idx)
+            node_cell = f'<td class="monospace">({layer},&#8239;{pos},&#8239;{feat_link})</td>'
+            body += f"<tr><td>{j + 1}</td>{node_cell}{score_cell}</tr>"
+        body += "</tbody></table></div>"
+    body += "</div>"
+
+    display(HTML(style + body))
+
+
+def display_attribution_config(
+    token_pairs: list[tuple[str, int]],
+    target_pairs: list[tuple[str, CustomTarget]],
+) -> None:
+    """Display token-mapping and custom-target summary tables.
+
+    Args:
+        token_pairs: List of ``(token_str, vocab_id)`` pairs for the Token Mappings table.
+        target_pairs: List of ``(kind_label, target)`` pairs for the Attribution Targets
+            table, where each ``target`` is a CustomTarget with ``.token_str`` and ``.prob`` attributes.
+    """
+    th_l = "padding:5px 14px 5px 6px; border-bottom:2px solid #888; text-align:left; white-space:nowrap"
+    th_r = "padding:5px 14px 5px 6px; border-bottom:2px solid #888; text-align:right; white-space:nowrap"
+    td_l = "padding:4px 14px 4px 6px; border-bottom:1px solid #ddd; text-align:left"
+    td_r = "padding:4px 14px 4px 6px; border-bottom:1px solid #ddd; text-align:right"
+
+    # ── Token Mappings ────────────────────────────────────────────────────────
+    token_rows = "".join(
+        "<tr>"
+        "<td style='" + td_l + "'><code>" + html.escape(tok) + "</code></td>"
+        "<td style='" + td_r + "'>" + str(vid) + "</td>"
+        "</tr>"
+        for tok, vid in token_pairs
+    )
+    display(
+        HTML(
+            "<b>Token Mappings</b>"
+            "<table style='border-collapse:collapse; font-size:0.9em; margin-top:4px'>"
+            "<thead><tr>"
+            "<th style='" + th_l + "'>Token</th>"
+            "<th style='" + th_r + "'>Vocab ID</th>"
+            "</tr></thead>"
+            "<tbody>" + token_rows + "</tbody>"
+            "</table>"
+        )
+    )
+
+    # ── Attribution Targets ───────────────────────────────────────────────────
+    target_rows = "".join(
+        "<tr>"
+        "<td style='" + td_l + "'>" + html.escape(kind) + "</td>"
+        "<td style='" + td_l + "'><code>" + html.escape(tgt.token_str) + "</code></td>"
+        "<td style='" + td_r + "'>" + f"{tgt.prob * 100:.3f}%" + "</td>"
+        "</tr>"
+        for kind, tgt in target_pairs
+    )
+    display(
+        HTML(
+            "<b style='margin-top:12px; display:block'>Attribution Targets</b>"
+            "<table style='border-collapse:collapse; font-size:0.9em; margin-top:4px'>"
+            "<thead><tr>"
+            "<th style='" + th_l + "'>Target</th>"
+            "<th style='" + th_l + "'>Label</th>"
+            "<th style='" + th_r + "'>Probability</th>"
+            "</tr></thead>"
+            "<tbody>" + target_rows + "</tbody>"
+            "</table>"
+        )
+    )
+
+
+def display_token_probs(
+    logits: torch.Tensor,
+    token_ids: list[int],
+    labels: list[str],
+    title: str = "",
+) -> None:
+    """Display softmax probabilities for specific tokens as a styled HTML table.
+
+    Probabilities are shown as percentages (3 decimal places) when ≥ 0.001,
+    otherwise in scientific notation (2 significant figures).
+
+    Args:
+        logits: Raw logits tensor (at least 2-D; last position is used).
+        token_ids: Vocabulary indices to display.
+        labels: Human-readable label for each token.
+        title: Optional heading rendered above the table.
+    """
+    probs = torch.softmax(logits.squeeze(0)[-1].float(), dim=-1)
+
+    def _fmt(p: float) -> str:
+        return f"{p * 100:.3f}%" if p >= 1e-3 else f"{p:.2e}"
+
+    rows = ""
+    for i, (tid, label) in enumerate(zip(token_ids, labels)):
+        p = probs[tid].item()
+        logit_val = logits.squeeze(0)[-1, tid].item()
+        row_class = "even-row" if i % 2 == 0 else "odd-row"
+        rows += (
+            f'<tr class="{row_class}">'
+            f'<td class="monospace">{html.escape(label)}</td>'
+            f'<td style="text-align:right;">{_fmt(p)}</td>'
+            f'<td style="text-align:right;">{logit_val:.4f}</td>'
+            f"</tr>\n"
+        )
+
+    title_html = (
+        f'<div style="font-weight:bold;font-size:14px;margin-bottom:4px;padding:4px 6px;border-radius:3px;background:#555;color:white;display:inline-block;">{html.escape(title)}</div>'
+        if title
+        else ""
+    )
+
+    markup = f"""
+    <div style="font-family:system-ui,-apple-system,sans-serif;max-width:420px;margin-bottom:10px;font-size:13px;">
+        {title_html}
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr>
+                    <th style="text-align:left;padding:3px 6px;border:1px solid rgba(150,150,150,0.5);background:rgba(200,200,200,0.3);">Token</th>
+                    <th style="text-align:right;padding:3px 6px;border:1px solid rgba(150,150,150,0.5);background:rgba(200,200,200,0.3);">Probability</th>
+                    <th style="text-align:right;padding:3px 6px;border:1px solid rgba(150,150,150,0.5);background:rgba(200,200,200,0.3);">Logit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows}
+            </tbody>
+        </table>
+    </div>
+    """
+    display(HTML(markup))
+
+
+def display_ablation_chart(
+    groups: dict[str, dict[str, float]],
+    logit_diffs: dict[str, float] | None = None,
+    title: str = "",
+    colors: list[str] | None = None,
+) -> None:
+    """Display ablation results as a grouped bar chart with logit-difference line.
+
+    Args:
+        groups: Mapping from group label (e.g. ``"Baseline"``) to a dict
+            of ``{token_label: probability}``.
+        logit_diffs: Optional mapping from group label to logit difference,
+            plotted as a dashed line on a secondary y-axis.
+        title: Chart title.
+        colors: Bar colours for each token.  Defaults to a built-in palette.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    group_labels = list(groups.keys())
+    token_labels = list(next(iter(groups.values())).keys())
+    n_groups = len(group_labels)
+    n_tokens = len(token_labels)
+
+    if colors is None:
+        colors = ["#2471A3", "#E67E22", "#27AE60", "#C0392B", "#8E44AD"][:n_tokens]
+
+    x = np.arange(n_groups)
+    width = 0.8 / n_tokens
+
+    fig, ax1 = plt.subplots(figsize=(8, 5.0))
+
+    for i, tok in enumerate(token_labels):
+        vals = [groups[g].get(tok, 0) for g in group_labels]
+        offset = (i - (n_tokens - 1) / 2) * width
+        bars = ax1.bar(
+            x + offset,
+            vals,
+            width * 0.9,
+            label=tok,
+            color=colors[i],
+            alpha=0.85,
+        )
+        for bar, v in zip(bars, vals):
+            ax1.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.005,
+                f"{v:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+    ax1.set_ylabel("Probability")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(group_labels)
+    max_prob = max(max(groups[g].get(t, 0) for t in token_labels) for g in group_labels)
+    ax1.set_ylim(0, max_prob * 1.4)
+
+    if logit_diffs is not None:
+        ax2 = ax1.twinx()
+        diff_vals = [logit_diffs.get(g, 0) for g in group_labels]
+        ax2.plot(
+            x,
+            diff_vals,
+            "k--o",
+            label="Logit diff",
+            linewidth=1.5,
+            markersize=5,
+        )
+        ax2.set_ylabel("Logit difference")
+        ax2.legend(loc="upper right")
+
+    ax1.legend(loc="upper left")
+    if title:
+        ax1.set_title(title, fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    plt.show()
 
 
 def get_topk(logits: torch.Tensor, tokenizer, k: int = 5):
@@ -16,10 +387,29 @@ def get_topk(logits: torch.Tensor, tokenizer, k: int = 5):
 
 
 # Now let's create a version that's more adaptive to dark/light mode
-def display_topk_token_predictions(sentence, original_logits, new_logits, tokenizer, k: int = 5):
-    """
-    Version that tries to be more adaptive to both dark and light modes
-    using higher contrast elements and CSS variables where possible
+def display_topk_token_predictions(
+    sentence,
+    original_logits,
+    new_logits,
+    tokenizer,
+    k: int = 5,
+    key_tokens: list[tuple[str, int]] | None = None,
+):
+    """Display top-k token predictions before and after an intervention.
+
+    Adaptive to both dark and light modes using higher-contrast elements
+    and CSS variables where possible.
+
+    Args:
+        sentence: The input prompt string.
+        original_logits: Logits before the intervention.
+        new_logits: Logits after the intervention.
+        tokenizer: Tokenizer for decoding token IDs.
+        k: Number of top tokens to show per section.
+        key_tokens: Optional list of ``(token_label, token_id)`` pairs.
+            When provided, a third *Key Tokens* table is rendered showing
+            the probabilities of these specific tokens in both the original
+            and new distributions.
     """
 
     original_tokens = get_topk(original_logits, tokenizer, k)
@@ -186,6 +576,54 @@ def display_topk_token_predictions(sentence, original_logits, new_logits, tokeni
                 </tbody>
             </table>
         </div>
+    """
+
+    # Optional key-tokens section
+    if key_tokens:
+        orig_probs = torch.softmax(original_logits.squeeze()[-1], dim=-1)
+        new_probs = torch.softmax(new_logits.squeeze()[-1], dim=-1)
+
+        html += """
+        <div>
+            <div class="header" style="background-color: #8E44AD;">Key Tokens</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th class="token-col">Token</th>
+                        <th class="prob-col" style="text-align: right;">Original</th>
+                        <th class="prob-col" style="text-align: right;">New</th>
+                        <th class="dist-col">Change</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        for i, (label, tid) in enumerate(key_tokens):
+            p_orig = orig_probs[tid].item()
+            p_new = new_probs[tid].item()
+            relative = (p_new - p_orig) / max(p_orig, 1e-9)
+            sign = "+" if relative >= 0 else ""
+            bar_width = int(p_new / max(max_prob, 1e-9) * 100)
+            row_class = "even-row" if i % 2 == 0 else "odd-row"
+            html += f"""
+                    <tr class="{row_class}">
+                        <td class="monospace token-col" title="{label}">{label}</td>
+                        <td class="prob-col" style="text-align: right;">{p_orig:.4f}</td>
+                        <td class="prob-col" style="text-align: right;">{p_new:.4f}</td>
+                        <td class="dist-col">
+                            <div class="bar-container">
+                                <div class="bar" style="background-color: #8E44AD; width: {bar_width}%;"></div>
+                                <span class="bar-text">{sign}{relative * 100:.1f}%</span>
+                            </div>
+                        </td>
+                    </tr>
+            """
+        html += """
+                </tbody>
+            </table>
+        </div>
+        """
+
+    html += """
     </div>
     """
 

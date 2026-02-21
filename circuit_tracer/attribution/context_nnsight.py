@@ -103,8 +103,7 @@ class AttributionContext:
 
         proxy = weakref.proxy(self)
         proxy._batch_buffer[write_index] += einsum(
-            grads[read_index],
-            # grads.to(output_vecs.dtype)[read_index],
+            grads.to(output_vecs.dtype)[read_index],
             output_vecs,
             "batch position d_model, position d_model -> position batch",
         )

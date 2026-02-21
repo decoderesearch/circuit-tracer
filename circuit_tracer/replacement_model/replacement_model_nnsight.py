@@ -355,8 +355,8 @@ class NNSightReplacementModel(LanguageModel):
 
             logits = save(self.output.logits)
 
-            # If `activation_layers` is None we only need activations for certain
-            # layers during this forward pass, so avoid creating and saving the full cache.
+            # activation_layers is None means that we only need the acts for those layers, during this forward pass
+            # So we don't bother creating / saving the whole cache
 
             if activation_layers is not None:
                 activation_cache = None
@@ -473,8 +473,7 @@ class NNSightReplacementModel(LanguageModel):
         dummy_bos_token_id = next(filter(None, candidate_bos_token_ids))
         if dummy_bos_token_id is None:
             warnings.warn(
-                "No suitable special token found for BOS token replacement. "
-                "The first token will be ignored.",
+                "No suitable special token found for BOS token replacement. The first token will be ignored."
             )
         else:
             tokens = torch.cat([torch.tensor([dummy_bos_token_id], device=tokens.device), tokens])
@@ -570,19 +569,16 @@ class NNSightReplacementModel(LanguageModel):
 
         Args:
             inputs (str | torch.Tensor): The inputs to intervene on
-            constrained_layers (range | None): Whether to apply interventions only to a
-                certain range. Mostly applicable to CLTs. If the given range includes
-                all model layers, we also freeze LayerNorm denominators to compute
-                direct effects. None means no constraints (iterative patching).
+            constrained_layers (range | None): whether to apply interventions only to a certain range.
+                Mostly applicable to CLTs. If the given range includes all model layers, we also freeze
+                layernorm denominators, computing direct effects. None means no constraints (iterative patching)
 
         Returns:
-            tuple[torch.Tensor, list[Callable]]: The freeze hooks needed to run the
-                desired intervention.
+            tuple[torch.Tensor, list[Callable]]: The freeze hooks needed to run the desired intervention.
         """
 
         def get_locs_to_freeze():
-            # This must be in a function invoked only within a trace context. Otherwise
-            # the `.source` attribute cannot be read twice.
+            # this needs to go in a function that is called only in a trace context! otherwise you can't get the .source twice
             locs_to_freeze = {"attention": self.attention_locs}
             if constrained_layers:
                 if set(range(self.cfg.n_layers)).issubset(set(constrained_layers)):  # type: ignore
@@ -596,8 +592,8 @@ class NNSightReplacementModel(LanguageModel):
         activation_matrix, activation_fn = self.get_activation_fn()
         cache = {}
 
-        # Somehow `self` can be replaced with an `EnvoyWrapper`, which causes issues.
-        # Use local references to avoid that problem.
+        # somehow, self is getting corrupted / changed somehow into type `EnvoyWrapper`, which causes issues.
+        # This gets around it.
         transcoders = self.transcoders
         skip_transcoder = self.skip_transcoder
 
@@ -642,13 +638,13 @@ class NNSightReplacementModel(LanguageModel):
                         assert len(original_outputs) == len(cached_values)
                         for orig, cached in zip(original_outputs, cached_values):
                             assert orig.shape == cached.shape, (
-                                f"Activations shape {orig.shape} does not match cached values "
-                                f"shape {cached.shape} at hook {loc_to_freeze.name}"
+                                f"Activations shape {orig.shape} does not match cached values"
+                                f" shape {cached.shape} at hook {loc_to_freeze.name}"
                             )
                     else:
                         assert original_outputs.shape == cached_values.shape, (
-                            f"Activations shape {original_outputs.shape} != {cached_values.shape} "
-                            f"at hook {loc_to_freeze.name}"
+                            f"Activations shape {original_outputs.shape} does not match cached values"
+                            f" shape {cached_values.shape} at hook {loc_to_freeze.name}"
                         )
 
                     if freeze_loc_name == "feature_output" and skip_transcoder:
@@ -737,8 +733,7 @@ class NNSightReplacementModel(LanguageModel):
                     layer, feature_idxs
                 )
 
-                # Handle both 2D [n_feature_idxs, d_model] and 3D
-                # [n_feature_idxs, n_remaining_layers, d_model] cases
+                # Handle both 2D [n_feature_idxs, d_model] and 3D [n_feature_idxs, n_remaining_layers, d_model] cases
                 if decoder_vectors.ndim == 2:
                     # Single-layer transcoder case: [n_feature_idxs, d_model]
                     decoder_vectors = decoder_vectors * new_values.unsqueeze(1)
@@ -780,12 +775,12 @@ class NNSightReplacementModel(LanguageModel):
 
         Args:
             input (_type_): the input prompt to intervene on
-            interventions (Sequence[Intervention]): A list of interventions to perform.
-                Each entry should be a tuple (layer, position, feature_idx, value)
-            constrained_layers (range | None): Whether to apply interventions only to a
-                certain layer range. Mostly applicable to CLTs. If the given range includes
-                all model layers, we also freeze LayerNorm denominators to compute direct
-                effects. None means no constraints (iterative patching).
+            intervention_dict (Sequence[Intervention]): A list of interventions to perform, formatted as
+                a list of (layer, position, feature_idx, value)
+            constrained_layers (range | None): whether to apply interventions only to a certain range, freezing
+                all MLPs within the layer range before doing so. This is mostly applicable to CLTs. If the given
+                range includes all model layers, we also freeze layernorm denominators, computing direct effects.
+                None means no constraints (iterative patching)
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for
                 testing purposes, as attribution predicts the change in pre-activation
@@ -877,28 +872,24 @@ class NNSightReplacementModel(LanguageModel):
         return_activations: bool = True,
         **kwargs,
     ) -> tuple[str, torch.Tensor, torch.Tensor | None]:
-        """Given the input and a dictionary of features to intervene on, this
-        performs the intervention and generates a continuation. It returns the
-        logits and activations at each generation position. This function accepts
-        additional kwargs valid for HookedTransformer.generate(). Note that
-        `freeze_attention` applies only to the first token generated.
+        """Given the input, and a dictionary of features to intervene on, performs the
+        intervention, and generates a continuation, along with the logits and activations at each generation position.
+        This function accepts all kwargs valid for HookedTransformer.generate(). Note that freeze_attention applies
+        only to the first token generated.
 
-        If `kv_cache` is True (default), generation is faster because the model
-        caches KV pairs and only processes the new token per step. If False,
-        the model performs a full forward pass across all tokens. Due to numerical
-        precision, logits/activations from `feature_intervention_generate(...)`
-        may differ from `feature_intervention(...)` unless `kv_cache` is False.
+        Note that if kv_cache is True (default), generation will be faster, as the model will cache the KVs, and only
+        process the one new token per step; if it is False, the model will generate by doing a full forward pass across
+        all tokens. Note that due to numerical precision issues, you are only guaranteed that the logits / activations of
+        model.feature_intervention_generate(s, ...) are equivalent to model.feature_intervention(s, ...) if kv_cache is False.
 
         Args:
             input (_type_): the input prompt to intervene on
             interventions (list[tuple[int, Union[int, slice, torch.Tensor]], int,
                 int | torch.Tensor]): A list of interventions to perform, formatted as
                 a list of (layer, position, feature_idx, value)
-            constrained_layers: (range | None = None): Whether to freeze MLPs and
-                transcoders, attention patterns, and LayerNorm denominators for a layer
-                range. This applies only to the first token generated.
-            freeze_attention (bool): Whether to freeze all attention patterns (applies to
-                the first token generated).
+            constrained_layers: (range | None = None): whether to freeze all MLPs/transcoders /
+                attn patterns / layernorm denominators. This will only apply to the very first token generated. If
+            freeze_attention (bool): whether to freeze all attention patterns. Applies only to first token generated
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for
                 testing purposes, as attribution predicts the change in pre-activation
@@ -1004,11 +995,8 @@ class NNSightReplacementModel(LanguageModel):
 
     def get_feature_input_loc(self, layer: int):
         """
-        Returns a feature input location wrapped in an EnvoyWrapper.
-
-        Some feature inputs expose `.input` while others expose `.output`. An
-        EnvoyWrapper normalizes this so that `.output` always returns the
-        relevant value.
+        Returns a feature input loc wrapped in an EnvoyWrapper. This is necessary because some feature inputs need .input, and
+        some need .output. An EnvoyWrapper just wraps them such that .output always returns the relevant value.
         """
         return EnvoyWrapper(
             self._resolve_attr(self, self._feature_input_pattern.format(layer=layer)),

@@ -1,7 +1,7 @@
 """
 Build an **attribution graph** that captures the *direct*, *linear* effects
 between features and next-token logits for a *prompt-specific*
-**local replacement model** using the NNSight backend.
+**local replacement model**.
 
 High-level algorithm (matches the 2025 ``Attribution Graphs`` paper):
 https://transformer-circuits.pub/2025/attribution-graphs/methods.html
@@ -28,7 +28,11 @@ from typing import Literal, cast
 import torch
 from tqdm import tqdm
 
-from circuit_tracer.attribution.targets import AttributionTargets
+from circuit_tracer.attribution.targets import (
+    AttributionTargets,
+    TargetSpec,
+    log_attribution_target_info,
+)
 from circuit_tracer.graph import Graph, compute_partial_influences
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
 from circuit_tracer.utils.disk_offload import offload_modules
@@ -38,9 +42,7 @@ def attribute(
     prompt: str | torch.Tensor | list[int],
     model: NNSightReplacementModel,
     *,
-    attribution_targets: (
-        Sequence[tuple[str, float, torch.Tensor] | int | str] | torch.Tensor | None
-    ) = None,
+    attribution_targets: Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None = None,
     max_n_logits: int = 10,
     desired_logit_prob: float = 0.95,
     batch_size: int = 512,
@@ -54,16 +56,13 @@ def attribute(
     Args:
         prompt: Text, token ids, or tensor - will be tokenized if str.
         model: Frozen ``NNSightReplacementModel``
-        attribution_targets: Flexible attribution target specification in one of several formats:
+        attribution_targets: Target specification in one of four formats:
                           - None: Auto-select salient logits based on probability threshold
                           - torch.Tensor: Tensor of token indices
-                          - Sequence[tuple[str, float, torch.Tensor] | int | str]: Sequence where
-                            each element can be:
-                              * int or str: Token ID/string (auto-resolves probability and
-                                unembed vector)
-                              * tuple[str, float, torch.Tensor]: Fully specified logit spec with
-                                arbitrary string tokens (or functions thereof) that may not be in
-                                vocabulary
+                          - Sequence[str]: Token strings (tokenized, auto-computes probability
+                            and unembed vector)
+                          - Sequence[TargetSpec]: Fully specified custom targets (CustomTarget or tuple)
+                            with arbitrary unembed directions
         max_n_logits: Max number of logit nodes (used when attribution_targets is None).
         desired_logit_prob: Keep logits until cumulative prob >= this value
                            (used when attribution_targets is None).
@@ -183,11 +182,7 @@ def _run_attribution(
         desired_logit_prob=desired_logit_prob,
     )
 
-    if attribution_targets is None:
-        logger.info(
-            f"Selected {len(targets)} logits with cumulative probability "
-            f"{targets.logit_probabilities.sum().item():.4f}"
-        )
+    log_attribution_target_info(targets, attribution_targets, logger)
 
     if offload:
         offload_handles += offload_modules([model.embed_location], offload)
@@ -292,7 +287,9 @@ def _run_attribution(
     graph = Graph(
         input_string=str(model.tokenizer.decode(input_ids)),
         input_tokens=input_ids,
-        attribution_targets=targets,
+        logit_targets=targets.logit_targets,
+        logit_probabilities=targets.logit_probabilities,
+        vocab_size=targets.vocab_size,
         active_features=activation_matrix.indices().T,
         activation_values=activation_matrix.values(),
         selected_features=selected_features,

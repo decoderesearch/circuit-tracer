@@ -33,7 +33,6 @@ def cleanup_cache():
 
 
 @pytest.mark.requires_disk
-@pytest.mark.long_running
 def test_caching_enables_lazy_loading():
     # 1. Load from hub without cache - lazy loading should not work because
     # gemma-scope transcoders use npz format which doesn't support lazy loading
@@ -82,7 +81,6 @@ def test_caching_enables_lazy_loading():
 
 
 @pytest.mark.requires_disk
-@pytest.mark.long_running
 def test_custom_cache_directory():
     try:
         # Ensure test cache dir doesn't exist initially
@@ -121,7 +119,6 @@ def test_custom_cache_directory():
 
 
 @pytest.mark.requires_disk
-@pytest.mark.long_running
 def test_cache_directory_from_env_var():
     env_cache_dir = Path.home() / ".cache" / "circuit-tracer-env-test"
     old_env = os.environ.get("CIRCUIT_TRACER_CACHE_DIR")

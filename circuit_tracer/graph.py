@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 import warnings
 
 import torch
@@ -13,9 +13,6 @@ from circuit_tracer.utils.tl_nnsight_mapping import (
 )
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.attribution.targets import LogitTarget
-
-if TYPE_CHECKING:
-    from circuit_tracer.attribution.targets import AttributionTargets
 
 
 class Graph:
@@ -41,10 +38,9 @@ class Graph:
         cfg,
         selected_features: torch.Tensor,
         activation_values: torch.Tensor,
+        logit_targets: list[LogitTarget],
+        logit_probabilities: torch.Tensor,
         scan: str | list[str] | None = None,
-        attribution_targets: AttributionTargets | None = None,
-        logit_targets: list[LogitTarget] | torch.Tensor | None = None,
-        logit_probabilities: torch.Tensor | None = None,
         vocab_size: int | None = None,
     ):
         """
@@ -66,47 +62,19 @@ class Graph:
                 model.cfg.n_layers * len(input_tokens) error nodes, len(input_tokens) embed
                 nodes, len(logit_targets) logit nodes. The rows represent target nodes, while
                 columns represent source nodes.
-            cfg (HookedTransformerConfig): The cfg of the model.
+            cfg: The cfg of the model.
             selected_features (torch.Tensor): Indices into active_features for selected nodes.
             activation_values (torch.Tensor): Activation values for selected features.
-            scan (Optional[Union[str,List[str]]], optional): The identifier of the
+            logit_targets: List of LogitTarget records describing each logit target.
+            logit_probabilities: Tensor of logit target probabilities/weights.
+            scan (Union[str,List[str]] | None, optional): The identifier of the
                 transcoders used in the graph. Without a scan, the graph cannot be uploaded
                 (since we won't know what transcoders were used). Defaults to None
-            attribution_targets (Optional[AttributionTargets]): Attribution targets container.
-                When provided, logit_targets, logit_probabilities, and vocab_size are
-                extracted from it.
-            logit_targets (Optional[Union[List[LogitTarget], torch.Tensor]]): Either a list
-                of LogitTarget records or a tensor of token_ids. When using tensor
-                format, token_str fields will be empty strings.
-            logit_probabilities (Optional[torch.Tensor]): Logit probabilities. Required if
-                attribution_targets is not provided.
-            vocab_size (Optional[int]): Vocabulary size for determining virtual indices.
-                If not provided, defaults to cfg.d_vocab.
+            vocab_size: Vocabulary size. If not provided, defaults to cfg.d_vocab.
         """
-        if attribution_targets is not None:
-            if logit_targets is not None or logit_probabilities is not None:
-                raise ValueError(
-                    "Cannot specify both attribution_targets and "
-                    "(logit_targets, logit_probabilities). Use one or the other."
-                )
-            self.logit_targets = attribution_targets.logit_targets
-            self.logit_probabilities = attribution_targets.logit_probabilities
-            self.vocab_size = attribution_targets.vocab_size
-        elif logit_targets is not None and logit_probabilities is not None:
-            if isinstance(logit_targets, torch.Tensor):
-                # When reconstructing from tensor, token_str is not available
-                self.logit_targets = [
-                    LogitTarget(token_str="", vocab_idx=int(idx)) for idx in logit_targets.tolist()
-                ]
-            else:
-                self.logit_targets = logit_targets
-            self.logit_probabilities = logit_probabilities
-            self.vocab_size = vocab_size if vocab_size is not None else cfg.d_vocab
-        else:
-            raise ValueError(
-                "Must provide either attribution_targets or both logit_targets and "
-                "logit_probabilities"
-            )
+        self.logit_targets = logit_targets
+        self.logit_probabilities = logit_probabilities
+        self.vocab_size = vocab_size if vocab_size is not None else cfg.d_vocab
 
         self.input_string = input_string
         self.adjacency_matrix = adjacency_matrix
@@ -133,39 +101,18 @@ class Graph:
         self.logit_probabilities = self.logit_probabilities.to(device)
 
     @property
-    def vocab_indices(self) -> list[int]:
-        """All vocabulary indices including virtual indices (>= vocab_size).
-
-        Provides the same interface as AttributionTargets.vocab_indices.
-        """
-        return [target.vocab_idx for target in self.logit_targets]
-
-    @property
-    def has_virtual_indices(self) -> bool:
-        """Check if any targets use virtual indices (OOV tokens).
-
-        Virtual indices (vocab_idx >= vocab_size) are a technique used to represent
-        arbitrary string tokens (or functions thereof) not in the tokenizer's vocabulary.
-        """
-        return any(t.vocab_idx >= self.vocab_size for t in self.logit_targets)
-
-    @property
     def logit_token_ids(self) -> torch.Tensor:
-        """Tensor of logit target token IDs (< vocab_size only).
+        """Tensor of logit target token IDs.
 
         Returns token IDs for logit targets on the same device as other graph tensors.
-        Provides the same interface as AttributionTargets.token_ids.
 
-        Raises:
-            ValueError: If any targets have virtual indices
+        Returns:
+            torch.Tensor: Long tensor of vocabulary indices
         """
-        if self.has_virtual_indices:
-            raise ValueError(
-                "Cannot create logit_token_ids tensor: some targets use virtual indices. "
-                "Use vocab_indices to get all indices including virtual ones."
-            )
         return torch.tensor(
-            self.vocab_indices, dtype=torch.long, device=self.logit_probabilities.device
+            [target.vocab_idx for target in self.logit_targets],
+            dtype=torch.long,
+            device=self.logit_probabilities.device,
         )
 
     @property
@@ -210,6 +157,9 @@ class Graph:
     def from_pt(path: str, map_location="cpu") -> "Graph":
         """Load a graph (saved using graph.to_pt) from a .pt file at the given path.
 
+        Handles backward compatibility with older serialized graphs that stored
+        logit_targets as a torch.Tensor of token IDs.
+
         Args:
             path (str): The path of the Graph to load
             map_location (str, optional): the device to load the graph onto.
@@ -219,6 +169,12 @@ class Graph:
             Graph: the Graph saved at the specified path
         """
         d = torch.load(path, weights_only=False, map_location=map_location)
+        # BC: convert legacy tensor logit_targets to LogitTarget list
+        lt = d.get("logit_targets")
+        if isinstance(lt, torch.Tensor):
+            d["logit_targets"] = [
+                LogitTarget(token_str="", vocab_idx=int(idx)) for idx in lt.tolist()
+            ]
         return Graph(**d)
 
 

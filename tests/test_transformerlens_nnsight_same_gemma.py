@@ -8,9 +8,10 @@ from circuit_tracer.attribution.attribute_nnsight import attribute as attribute_
 from circuit_tracer.attribution.attribute_transformerlens import (
     attribute as attribute_transformerlens,
 )
+from tests.conftest import has_32gb
 
-# Mark all tests in this module as requiring large GPU memory
-pytestmark = pytest.mark.large_gpu
+# Mark all tests in this module as requiring 32GB+ VRAM
+pytestmark = [pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")]
 
 
 @pytest.fixture(autouse=True)
