@@ -19,7 +19,7 @@ dependencies = [
     "torch>=2.0.0",
     "tqdm>=4.60.0",
     "transformer-lens>=2.16.0",
-    "transformers>=4.56.0,<=5.1.0",
+    "transformers>=4.56.0",
 ]
 
 [project.optional-dependencies]
