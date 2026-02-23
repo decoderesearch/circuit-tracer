@@ -134,6 +134,9 @@ The following transcodrs are available for use with `circuit-tracer`; this means
 - Llama-3.2 (1B): [PLTs](https://huggingface.co/mntss/transcoder-Llama-3.2-1B) and [CLTs](https://huggingface.co/mntss/clt-llama-3.2-1b-524k)
 - Qwen-3 PLTs: for Qwen-3 [0.6B](https://huggingface.co/mwhanna/qwen3-0.6b-transcoders-lowl0), [1.7B](https://huggingface.co/mwhanna/qwen3-1.7b-transcoders-lowl0), [4B](https://huggingface.co/mwhanna/qwen3-4b-transcoders), [8B](https://huggingface.co/mwhanna/qwen3-8b-transcoders), and [14B](https://huggingface.co/mwhanna/qwen3-14b-transcoders-lowl0)
 
+## Active Maintainer
+[Michael Hanna](https://hannamw.github.io/) ([@hannamw](https://github.com/hannamw)) is the primary maintainer, with support from [Decode Research](https://decoderesearch.org).
+
 ## Cite
 You can cite this library as follows:
 ```
