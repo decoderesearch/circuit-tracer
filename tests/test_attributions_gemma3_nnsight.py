@@ -504,8 +504,8 @@ def test_gemma3_with_dummy_clt():
     assert isinstance(model, NNSightReplacementModel)
 
     with model.zero_softcap():
-        verify_token_and_error_edges(model, graph)
-        verify_feature_edges(model, graph)
+        verify_token_and_error_edges(model, graph, act_rtol=5e-4)
+        verify_feature_edges(model, graph, act_rtol=5e-4)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

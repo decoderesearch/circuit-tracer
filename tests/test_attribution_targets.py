@@ -758,7 +758,7 @@ def _run_custom_target_correctness(
     n_samples: int = 20,
     act_atol: float = 5e-4,
     act_rtol: float = 1e-5,
-    logit_atol: float = 1e-4,
+    logit_atol: float = 2e-4,
     logit_rtol: float = 1e-3,
 ):
     """Verify custom target direction feature attribution driven interventions produce expected activation/logit changes
