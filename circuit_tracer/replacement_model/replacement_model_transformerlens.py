@@ -12,6 +12,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
+from circuit_tracer.replacement_model._validation import validate_single_sequence_inputs
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
@@ -430,6 +431,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             inputs (str): the inputs to attribute - hard coded to be a single string (no
                 batching) for now
         """
+        validate_single_sequence_inputs(inputs, "setup_attribution")
 
         if isinstance(inputs, str):
             tokens = self.ensure_tokenized(inputs)
@@ -488,6 +490,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         Returns:
             list[tuple[str, Callable]]: The freeze hooks needed to run the desired intervention.
         """
+        validate_single_sequence_inputs(inputs, "setup_intervention_with_freeze")
 
         hookpoints_to_freeze = ["hook_pattern"]
         if constrained_layers:
@@ -773,6 +776,7 @@ class TransformerLensReplacementModel(HookedTransformer):
                 constrained_layers is not set), saving time. Activations are not returned.
                 Defaults to True.
         """
+        validate_single_sequence_inputs(inputs, "feature_intervention")
 
         hooks, _, activation_cache = self._get_feature_intervention_hooks(
             inputs,
@@ -851,6 +855,7 @@ class TransformerLensReplacementModel(HookedTransformer):
                 constrained_layers is not set), saving time. Returns None for activations.
                 Defaults to True.
         """
+        validate_single_sequence_inputs(inputs, "feature_intervention_generate")
 
         feature_intervention_hook_output = self._get_feature_intervention_hooks(
             inputs,
