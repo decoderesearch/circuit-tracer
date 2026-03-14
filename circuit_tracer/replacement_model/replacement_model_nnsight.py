@@ -12,6 +12,7 @@ from nnsight.intervention.tracing.tracer import Barrier
 from nnsight import LanguageModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
+from circuit_tracer.replacement_model._utils import zero_special_positions
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
@@ -322,7 +323,7 @@ class NNSightReplacementModel(LanguageModel):
                 )
 
                 if not (append and len(activation_matrix[layer]) > 0):  # type:ignore
-                    transcoder_acts[self.zero_positions] = 0
+                    zero_special_positions(transcoder_acts, self.zero_positions)
 
                 if sparse:
                     transcoder_acts = transcoder_acts.to_sparse()
