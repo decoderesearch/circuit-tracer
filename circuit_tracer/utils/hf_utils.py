@@ -10,9 +10,10 @@ from urllib.parse import parse_qs, urlparse
 import torch
 import yaml
 from huggingface_hub import get_token, hf_api, hf_hub_download, snapshot_download
-from huggingface_hub.constants import HF_HUB_ENABLE_HF_TRANSFER
 from huggingface_hub.utils.tqdm import tqdm as hf_tqdm
 from tqdm.contrib.concurrent import thread_map
+
+from circuit_tracer.utils.tl_nnsight_mapping import TRANSFORMERS_GTE_5_0_0
 
 logger = logging.getLogger(__name__)
 
@@ -336,8 +337,16 @@ def download_hf_uris(uris: Iterable[str], max_workers: int = 8) -> dict[str, str
             force_download=False,
         )
 
-    if HF_HUB_ENABLE_HF_TRANSFER:
-        # Use a simple loop for sequential download if HF_TRANSFER is enabled
+    # Check for high-performance transfer mode for which we use sequential downloads.
+    # In huggingface_hub v1.0+ (transformers v5+), HF_XET_HIGH_PERFORMANCE replaces
+    # the deprecated HF_HUB_ENABLE_HF_TRANSFER environment variable.
+    if TRANSFORMERS_GTE_5_0_0:
+        use_sequential = os.environ.get("HF_XET_HIGH_PERFORMANCE", "0") == "1"
+    else:
+        use_sequential = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1"
+
+    if use_sequential:
+        # Use a simple loop for sequential download when high-performance transfer is enabled
         results = [_download(uri) for uri in uri_list]
         return dict(zip(uri_list, results))
 
