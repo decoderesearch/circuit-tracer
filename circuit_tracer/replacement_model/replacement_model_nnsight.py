@@ -850,7 +850,7 @@ class NNSightReplacementModel(LanguageModel):
         sparse: bool = False,
         return_activations: bool = True,
         **kwargs,
-    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:  # logits: (seq_len, vocab_size)
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and generates a continuation, along with the logits and activations at each generation position.
         This function accepts all kwargs valid for HookedTransformer.generate(). Note that freeze_attention applies
@@ -861,13 +861,19 @@ class NNSightReplacementModel(LanguageModel):
         all tokens. Note that due to numerical precision issues, you are only guaranteed that the logits / activations of
         model.feature_intervention_generate(s, ...) are equivalent to model.feature_intervention(s, ...) if kv_cache is False.
 
+        .. note::
+            Unlike ``feature_intervention`` (which returns 3-D logits of shape
+            ``(batch, seq_len, vocab_size)``), this method returns **2-D** logits of shape
+            ``(seq_len, vocab_size)`` with no batch dimension, since generation is always
+            batch=1. This was changed in commit a1ca600.
+
         Args:
             input (_type_): the input prompt to intervene on
             interventions (list[tuple[int, Union[int, slice, torch.Tensor]], int,
                 int | torch.Tensor]): A list of interventions to perform, formatted as
                 a list of (layer, position, feature_idx, value)
             constrained_layers: (range | None = None): whether to freeze all MLPs/transcoders /
-                attn patterns / layernorm denominators. This will only apply to the very first token generated. If
+                attn patterns / layernorm denominators. This will only apply to the very first token generated.
             freeze_attention (bool): whether to freeze all attention patterns. Applies only to first token generated
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for
@@ -879,6 +885,10 @@ class NNSightReplacementModel(LanguageModel):
                 activation computation is skipped for layers not being intervened on (when
                 constrained_layers is not set), saving time. Returns None for activations.
                 Defaults to True.
+
+        Returns:
+            tuple[str, torch.Tensor, torch.Tensor | None]: A tuple of (generated_text,
+                logits, activations) where logits has shape ``(seq_len, vocab_size)`` (2-D).
         """
 
         # remove verbose kwarg, which is valid for TL models but not NNsight ones.

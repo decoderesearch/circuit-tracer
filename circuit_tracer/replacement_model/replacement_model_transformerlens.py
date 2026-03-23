@@ -820,7 +820,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         sparse: bool = False,
         return_activations: bool = True,
         **kwargs,
-    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:  # logits: (seq_len, vocab_size)
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and generates a continuation, along with the logits and activations at
         each generation position.
@@ -831,6 +831,12 @@ class TransformerLensReplacementModel(HookedTransformer):
         process the one new token per step; if it is False, the model will generate by doing a full forward pass across
         all tokens. Note that due to numerical precision issues, you are only guaranteed that the logits / activations of
         model.feature_intervention_generate(s, ...) are equivalent to model.feature_intervention(s, ...) if kv_cache is False.
+
+        .. note::
+            Unlike ``feature_intervention`` (which returns 3-D logits of shape
+            ``(batch, seq_len, vocab_size)``), this method returns **2-D** logits of shape
+            ``(seq_len, vocab_size)`` with no batch dimension, since generation is always
+            batch=1. This was changed in commit a1ca600.
 
         Args:
             input (_type_): the input prompt to intervene on
@@ -850,6 +856,10 @@ class TransformerLensReplacementModel(HookedTransformer):
                 activation computation is skipped for layers not being intervened on (when
                 constrained_layers is not set), saving time. Returns None for activations.
                 Defaults to True.
+
+        Returns:
+            tuple[str, torch.Tensor, torch.Tensor | None]: A tuple of (generated_text,
+                logits, activations) where logits has shape ``(seq_len, vocab_size)`` (2-D).
         """
 
         feature_intervention_hook_output = self._get_feature_intervention_hooks(

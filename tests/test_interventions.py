@@ -104,6 +104,13 @@ def test_intervention_generate_return_activations_tl():
         f"Generated strings should be identical, but got {str_with_acts}, {str_without_acts}"
     )
 
+    assert logits_with_activations.dim() == 2, (
+        "feature_intervention_generate should return 2-D logits (seq_len, vocab_size)"
+    )
+    assert logits_without_activations.dim() == 2, (
+        "feature_intervention_generate should return 2-D logits (seq_len, vocab_size)"
+    )
+
     assert torch.allclose(
         logits_with_activations, logits_without_activations, atol=1e-6, rtol=1e-5
     ), "Logits should be identical regardless of return_activations setting"
@@ -141,6 +148,13 @@ def test_intervention_generate_return_activations_nnsight():
 
     assert str_with_acts == str_without_acts, (
         f"Generated strings should be identical, but got {str_with_acts}, {str_without_acts}"
+    )
+
+    assert logits_with_activations.dim() == 2, (
+        "feature_intervention_generate should return 2-D logits (seq_len, vocab_size)"
+    )
+    assert logits_without_activations.dim() == 2, (
+        "feature_intervention_generate should return 2-D logits (seq_len, vocab_size)"
     )
 
     assert torch.allclose(
@@ -254,6 +268,10 @@ def test_intervention_generate_sparse_tl():
         f"Generated strings should be identical, but got {str_dense}, {str_sparse}"
     )
 
+    assert logits_dense.dim() == 2, (
+        "feature_intervention_generate should return 2-D logits (seq_len, vocab_size)"
+    )
+
     assert torch.allclose(logits_dense, logits_sparse, atol=1e-6, rtol=1e-5), (
         "Logits should be identical regardless of sparse setting"
     )
@@ -297,6 +315,10 @@ def test_intervention_generate_sparse_nnsight():
         f"Generated strings should be identical, but got {str_dense}, {str_sparse}"
     )
 
+    assert logits_dense.dim() == 2, (
+        "feature_intervention_generate should return 2-D logits (seq_len, vocab_size)"
+    )
+
     assert torch.allclose(logits_dense, logits_sparse, atol=1e-6, rtol=1e-5), (
         "Logits should be identical regardless of sparse setting"
     )
@@ -307,6 +329,48 @@ def test_intervention_generate_sparse_nnsight():
         atol=1e-6,
         rtol=1e-5,
     ), "Activations should be identical regardless of sparse setting"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_intervention_generate_logits_dim_tl():
+    """Regression test: feature_intervention_generate must return 2-D logits (seq_len, vocab_size)."""
+    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
+
+    s = "Fait: Michael Jordan joue au"
+    interventions = [(20, slice(6, None), 1454, 0), (20, slice(6, None), 341, 272)]
+
+    with model.zero_softcap():
+        _, logits, _ = model.feature_intervention_generate(
+            s,
+            interventions,
+            constrained_layers=range(model.cfg.n_layers),  # type:ignore
+            do_sample=False,
+        )
+
+    assert logits.dim() == 2, (
+        f"Expected 2-D logits (seq_len, vocab_size) but got {logits.dim()}-D with shape {logits.shape}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_intervention_generate_logits_dim_nnsight():
+    """Regression test: feature_intervention_generate must return 2-D logits (seq_len, vocab_size)."""
+    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma", backend="nnsight")
+
+    s = "Fait: Michael Jordan joue au"
+    interventions = [(20, slice(6, None), 1454, 0), (20, slice(6, None), 341, 272)]
+
+    with model.zero_softcap():
+        _, logits, _ = model.feature_intervention_generate(
+            s,
+            interventions,
+            constrained_layers=range(model.config.num_hidden_layers),  # type:ignore
+            do_sample=False,
+        )
+
+    assert logits.dim() == 2, (
+        f"Expected 2-D logits (seq_len, vocab_size) but got {logits.dim()}-D with shape {logits.shape}"
+    )
 
 
 if __name__ == "__main__":
