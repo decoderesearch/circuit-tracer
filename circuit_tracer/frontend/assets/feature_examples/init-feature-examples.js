@@ -42,7 +42,12 @@ window.initFeatureExamples = function({containerSel, showLogits=true, showExampl
     return feature
   }
 
-  function hfUrl(scan, path) {
+  function featureUrl(scan, path) {
+    // If the scan is a local path, fetch features from the local directory
+    if (scan.startsWith('/') || scan.startsWith('./')) {
+      return `/features/${path}`
+    }
+    // else create the HuggingFace url
     const [repoId, rest] = scan.split('//')
     const [filePath, revision] = rest ? rest.split('@') : [null, scan.split('@')[1]]
     const prefix = filePath ? `${filePath}/` : ''
@@ -52,7 +57,7 @@ window.initFeatureExamples = function({containerSel, showLogits=true, showExampl
   function indexFileExists(scan) {
     if (indexFileExistsCache.has(scan)) return indexFileExistsCache.get(scan)
     
-    const promise = fetch(hfUrl(scan, 'index.json.gz'), { method: 'HEAD' })
+    const promise = fetch(featureUrl(scan, 'index.json.gz'), { method: 'HEAD' })
       .then(response => response.ok)
       .catch(error => {
         if (error.status === 404) {
@@ -68,7 +73,7 @@ window.initFeatureExamples = function({containerSel, showLogits=true, showExampl
 
   async function loadFeatureFromBinary(scan, featureIndex) {
     const [layerIdx, featIdx] = util.cantorUnpair(featureIndex)
-    const indexData = await util.getFile(hfUrl(scan, 'index.json.gz'))
+    const indexData = await util.getFile(featureUrl(scan, 'index.json.gz'))
     const offsets = indexData[layerIdx]['offsets']
     const binFilename = indexData[layerIdx]['filename']
     const startByte = offsets[featIdx]
@@ -78,14 +83,14 @@ window.initFeatureExamples = function({containerSel, showLogits=true, showExampl
       throw new Error(`Feature ${featureIndex} not found in index`)
     }
 
-    return await util.getFile(hfUrl(scan, binFilename), true, 'bin', `bytes=${startByte}-${endByte}`)
+    return await util.getFile(featureUrl(scan, binFilename), true, 'bin', `bytes=${startByte}-${endByte}`)
   }
 
 
   async function loadFeature(scan, featureIndex){
     if (scan.startsWith('./')) {
       var feature = await  util.getFile(`${scan}/${featureIndex}.json`)
-    } else if (await indexFileExists(scan)){
+    } else if (scan.startsWith('/') || scan.startsWith('./') || await indexFileExists(scan)){
       var feature = await loadFeatureFromBinary(scan, featureIndex)
     } else {
       var feature = await  util.getFile(`./features/${scan}/${featureIndex}.json`)

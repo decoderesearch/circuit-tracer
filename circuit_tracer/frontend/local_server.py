@@ -31,11 +31,12 @@ class ListHandler(logging.Handler):
 class ReusableTCPServer(socketserver.TCPServer):
     allow_reuse_address = True
 
-
-# Create handler for serving circuit graph data
+# Create handler for serving circuit graph data 
+# Local feature handling incorporated
 class CircuitGraphHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args, frontend_dir, data_dir, **kwargs):
+    def __init__(self, *args, frontend_dir, data_dir, features_dir, **kwargs):
         self.data_dir = data_dir
+        self.features_dir = features_dir
         super().__init__(*args, directory=str(frontend_dir), **kwargs)
 
     def log_message(self, format, *args):
@@ -55,6 +56,34 @@ class CircuitGraphHandler(http.server.SimpleHTTPRequestHandler):
     def _do_GET(self):
         logger.info(f"Received request for {self.path}")
 
+        if ((self.features_dir is not None) and (self.path.startswith('/features/'))):
+            rel_path = self.path[len('/features/'):].split('?')[0]
+            local_path = os.path.join(self.features_dir, rel_path)
+            if not os.path.exists(local_path):
+                self.send_response(404)
+                self.end_headers()
+                return
+            range_header = self.headers.get('Range', '')
+            with open(local_path, 'rb') as f:
+                if range_header.startswith('bytes='):
+                    file_size = os.path.getsize(local_path)
+                    start, end = range_header[6:].split('-')
+                    start = int(start)
+                    end = int(end) if end else file_size - 1
+                    f.seek(start)
+                    content = f.read(end - start + 1)
+                    self.send_response(206)
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+                else:
+                    content = f.read()
+                    self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(len(content)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(content)
+            return
+    
         # Handle data and graph_data requests from local storage
         if self.path.startswith(("/data/", "/graph_data/")):
             # Extract the file path from the URL
@@ -188,13 +217,13 @@ class Server:
         """Return the current log messages."""
         return self.logs
 
-
-def serve(data_dir, frontend_dir=None, port=8032):
+def serve(data_dir, frontend_dir=None, features_dir=None, port=8032):
     """Start a local HTTP server in a separate thread.
 
     Args:
         data_dir: Directory for local graph data.
         frontend_dir: Directory containing frontend files. Defaults to DEFAULT_FRONTEND_DIR.
+        features_dir: If features are local, path to directory containing local feature files; else None. Defaults to None.
         port: Port to serve on. Defaults to 8032.
 
     Returns:
@@ -211,7 +240,7 @@ def serve(data_dir, frontend_dir=None, port=8032):
     logger.info(f"Serving files from: {frontend_dir}")
 
     # Create a partially applied handler class with configured directories
-    handler = functools.partial(CircuitGraphHandler, frontend_dir=frontend_dir, data_dir=data_dir)
+    handler = functools.partial(CircuitGraphHandler, frontend_dir=frontend_dir, data_dir=data_dir, features_dir=features_dir)
 
     httpd = ReusableTCPServer(("", port), handler)
 
