@@ -717,7 +717,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         ]
 
         all_hooks = freeze_hooks + activation_hooks + delta_hooks + intervention_hooks
-        cached_logits = [] if using_past_kv_cache else [None]
+        cached_logits = []
 
         def logit_cache_hook(activations, hook):
             # we need to manually apply the softcap (if used by the model), as it comes post-hook
@@ -727,10 +727,7 @@ class TransformerLensReplacementModel(HookedTransformer):
                 )
             else:
                 logits = activations.clone()
-            if using_past_kv_cache:
-                cached_logits.append(logits)
-            else:
-                cached_logits[0] = logits
+            cached_logits.append(logits)
 
         all_hooks.append(("unembed.hook_post", logit_cache_hook))
 
