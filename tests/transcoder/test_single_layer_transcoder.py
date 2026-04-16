@@ -7,7 +7,7 @@ import torch
 from safetensors.torch import save_file
 
 from circuit_tracer.transcoder.single_layer_transcoder import (
-    load_relu_transcoder,
+    load_transcoder,
     load_transcoder_set,
 )
 
@@ -129,7 +129,7 @@ def test_sparse_encode_decode(create_test_transcoder_file):
     """Test sparse encoding and decoding functionality."""
     path, _ = create_test_transcoder_file(d_model=128, d_sae=512)
 
-    transcoder = load_relu_transcoder(
+    transcoder = load_transcoder(
         path, layer=0, device=torch.device("cpu"), lazy_encoder=False, lazy_decoder=False
     )
 
@@ -160,12 +160,12 @@ def test_decoder_slice_access(create_test_transcoder_file):
     path, expected_state = create_test_transcoder_file(d_model=128, d_sae=512)
 
     # Test eager decoder
-    eager_transcoder = load_relu_transcoder(
+    eager_transcoder = load_transcoder(
         path, layer=0, lazy_encoder=True, lazy_decoder=False, device=torch.device("cpu")
     )
 
     # Test lazy decoder
-    lazy_transcoder = load_relu_transcoder(
+    lazy_transcoder = load_transcoder(
         path, layer=0, lazy_encoder=True, lazy_decoder=True, device=torch.device("cpu")
     )
 
@@ -203,7 +203,7 @@ def test_encode_decode_operations(create_test_transcoder_file):
 
     outputs = []
     for lazy_enc, lazy_dec in configs:
-        transcoder = load_relu_transcoder(
+        transcoder = load_transcoder(
             path, layer=0, lazy_encoder=lazy_enc, lazy_decoder=lazy_dec, device=torch.device("cpu")
         )
 
@@ -230,7 +230,7 @@ def test_lazy_encoder_only(create_test_transcoder_file):
     """Test lazy loading of encoder while decoder is eager."""
     path, expected_state = create_test_transcoder_file()
 
-    transcoder = load_relu_transcoder(
+    transcoder = load_transcoder(
         path, layer=0, lazy_encoder=True, lazy_decoder=False, device=torch.device("cpu")
     )
 
@@ -252,7 +252,7 @@ def test_lazy_decoder_only(create_test_transcoder_file):
     """Test lazy loading of decoder while encoder is eager."""
     path, expected_state = create_test_transcoder_file()
 
-    transcoder = load_relu_transcoder(
+    transcoder = load_transcoder(
         path, layer=0, lazy_encoder=False, lazy_decoder=True, device=torch.device("cpu")
     )
 
@@ -274,7 +274,7 @@ def test_lazy_loading_both(create_test_transcoder_file):
     """Test lazy loading of both encoder and decoder."""
     path, expected_state = create_test_transcoder_file()
 
-    transcoder = load_relu_transcoder(
+    transcoder = load_transcoder(
         path, layer=0, lazy_encoder=True, lazy_decoder=True, device=torch.device("cpu")
     )
 
