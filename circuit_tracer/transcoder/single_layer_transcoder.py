@@ -447,7 +447,7 @@ def load_gemma_scope_transcoder(
 def load_transcoder(
     path: str,
     layer: int,
-    activation_fn: str | None = None,
+    activation_fn=None,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
     lazy_encoder: bool = True,
@@ -469,13 +469,13 @@ def load_transcoder(
     d_model = param_dict["b_dec"].shape[0]
 
     # JumpReLU
-    if "activation_function.threshold" in param_dict:
-        activation_function = JumpReLU(param_dict["activation_function.threshold"], 0.1)
-    elif activation_fn == "topk":
-        k = int(param_dict["k"].item())
-        activation_function = TopK(k)
+    if activation_fn is None:
+        if "activation_function.threshold" in param_dict:
+            activation_function = JumpReLU(param_dict["activation_function.threshold"], 0.1)
+        else:
+            activation_function = F.relu
     else:
-        activation_function = F.relu
+        activation_function = activation_fn
 
     with torch.device("meta"):
         transcoder = SingleLayerTranscoder(
@@ -568,7 +568,9 @@ def load_transcoder_set(
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
     special_load_fn: Literal["gemma-scope", "gemma-scope-2", None] = None,
-    activation_fn: str | None = None,
+    # Activation function config; k is only used when activation="topk"
+    activation: str | None = None,
+    k: int | None = None,
     lazy_encoder: bool = True,
     lazy_decoder: bool = True,
 ) -> TranscoderSet:
@@ -584,13 +586,22 @@ def load_transcoder_set(
         device (torch.device | None, optional): Device to load to
         dtype (torch.dtype | None, optional): Data type to use
         special_load_fn: Which special loading function to use
-        activation_fn: Which activation function to use in the transcoder
+        config: The config file
         lazy_encoder: Whether to use lazy loading for encoder weights
         lazy_decoder: Whether to use lazy loading for decoder weights
 
     Returns:
         TranscoderSet: The loaded transcoder set with all configuration
     """
+
+    if activation == "topk":
+        assert k is not None, "You must pass k if activation is topk"
+        activation_fn = TopK(k)
+    elif activation == "relu":
+        activation_fn = F.relu
+    else:
+        # For JumpReLU (and potentially others), we load the log-thresholds from weights
+        activation_fn = None
 
     transcoders = {}
     for layer in range(len(transcoder_paths)):
