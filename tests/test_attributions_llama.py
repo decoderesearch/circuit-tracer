@@ -225,6 +225,19 @@ def test_llama_3_2_1b():
     verify_feature_edges(model, graph)
 
 
+# @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+# def test_llama_3_1_8b():
+#     s = "The National Digital Analytics Group (ND"
+#     model = ReplacementModel.from_pretrained(
+#         "meta-llama/Llama-3.1-8B", "facebook/crv-8b-instruct-transcoders", lazy_encoder=True
+#     )
+#     assert isinstance(model, TransformerLensReplacementModel)
+#     graph = attribute(s, model, batch_size=128)
+
+#     verify_token_and_error_edges(model, graph)
+#     verify_feature_edges(model, graph)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_llama_3_2_1b_clt():
     s = "The National Digital Analytics Group (ND"
@@ -243,4 +256,5 @@ if __name__ == "__main__":
     test_small_llama_model()
     test_large_llama_model()
     test_llama_3_2_1b()
+    # test_llama_3_1_8b()
     test_llama_3_2_1b_clt()

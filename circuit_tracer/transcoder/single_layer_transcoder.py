@@ -219,6 +219,9 @@ class SingleLayerTranscoder(nn.Module):
         if isinstance(self.activation_function, JumpReLU):
             state_dict["activation_function.threshold"] = self.activation_function.threshold.cpu()
 
+        if isinstance(self.activation_function, TopK):
+            state_dict["k"] = torch.tensor(self.activation_function.k)
+
         if self.W_skip is not None:
             state_dict["W_skip"] = self.W_skip.cpu()
 
@@ -468,8 +471,8 @@ def load_transcoder(
     # JumpReLU
     if "activation_function.threshold" in param_dict:
         activation_function = JumpReLU(param_dict["activation_function.threshold"], 0.1)
-    elif activation_fn == 'topk':
-        k = 64
+    elif activation_fn == "topk":
+        k = int(param_dict["k"].item())
         activation_function = TopK(k)
     else:
         activation_function = F.relu
