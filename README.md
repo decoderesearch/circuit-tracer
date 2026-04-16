@@ -39,6 +39,9 @@ We also provide a number of annotated attribution graphs for both models, which 
 
 ## Usage
 ### Available Transcoders
+
+**On HuggingFace**
+
 The following transcoders are available for use with `circuit-tracer`; this means that the transcoder weights and features are both available (so features will load properly when you run the visualization server). You can use the HuggingFace repo name (e.g. `mntss/gemma-scope-transcoders`) as the `transcoders` argument of `ReplacementModel.from_pretrained`, or as the argument of `--transcoder_set` in the CLI. 
 - Gemma-2 (2B): [PLTs](https://huggingface.co/mntss/gemma-scope-transcoders) (originally from [GemmaScope](https://huggingface.co/google/gemma-scope)) and CLTs with 2 feature counts: [426K](https://huggingface.co/mntss/clt-gemma-2-2b-426k) and [2.5M](https://huggingface.co/mntss/clt-gemma-2-2b-2.5M)
 - Llama-3.2 (1B): [PLTs](https://huggingface.co/mntss/transcoder-Llama-3.2-1B) and [CLTs](https://huggingface.co/mntss/clt-llama-3.2-1b-524k)
@@ -46,6 +49,11 @@ The following transcoders are available for use with `circuit-tracer`; this mean
 - [GPT-OSS (20B) CLT](https://huggingface.co/mntss/clt-131k)
 - Gemma-3 PLTs (originally from [GemmaScope-2](https://huggingface.co/google/gemma-scope-2)) can be found [here for models of size 270M, 1B, 4B, 12B, and 27B, PT and IT](https://huggingface.co/collections/mwhanna/gemma-scope-2-transcoders-circuit-tracer). These require using the `nnsight` backend.
 
+**Locally Saved Transcoders**
+
+Locally saved transcoders can be loaded by using `ReplacementModel.from_pretrained` and including the full root path (not relative path) as the `transcoders` argument (e.g. `/path/to/local_transcoders/`). To enable feature visualizations in this case, you must direct the visualization server to the local feature data by setting the optional `features_dir` argument in `serve` to the same directory; for example: 
+
+`serve(data_dir=graph_path, port=port, features_dir='/path/to/local_transcoders/')`
 
 ### Choosing a Backend
 By default, `circuit-tracer` creates a `ReplacementModel` that inherits from the `TransformerLens` `HookedTransformer` class. However, `TransformerLens` does not support all HuggingFace models; it only supports those implemented in `TransformerLens`. 
