@@ -36,6 +36,12 @@ We finally provide demos that dig deeper into specific, pre-computed and pre-ann
 
 We also provide a number of annotated attribution graphs for both models, which can be found at the top of their two demo notebooks.
 
+## Choosing a Backend
+
+By default, `circuit-tracer` creates a `ReplacementModel` that inherits from the `TransformerLens` `HookedTransformer` class. However, `TransformerLens` does not support all HuggingFace models; it only supports those implemented in `TransformerLens`. 
+
+Creating a `ReplacementModel` with `backend='nnsight'` will create an `nnsight`-backed `ReplacementModel` that inherits from its `LanguageModel` class; this supports most HuggingFace models. That is, you can create an `nnsight` `ReplacementModel` using `ReplacementModel.from_pretrained(model_name, backend='nnsight')`. Note, however, that the `nnsight` backend is still experimental: it is slower and less memory-efficient, and may not provide all of the functionality of the `TransformerLens` version.
+
 ## Command-Line Interface
 
 The unified CLI performs the complete 3-step process for finding and visualizing circuits:
@@ -127,6 +133,9 @@ The following transcodrs are available for use with `circuit-tracer`; this means
 - Gemma-2 (2B): [PLTs (originally from GemmaScope)](https://huggingface.co/mntss/gemma-scope-transcoders) and CLTs with 2 feature counts: [426K](https://huggingface.co/mntss/clt-gemma-2-2b-426k) and [2.5M](https://huggingface.co/mntss/clt-gemma-2-2b-2.5M)
 - Llama-3.2 (1B): [PLTs](https://huggingface.co/mntss/transcoder-Llama-3.2-1B) and [CLTs](https://huggingface.co/mntss/clt-llama-3.2-1b-524k)
 - Qwen-3 PLTs: for Qwen-3 [0.6B](https://huggingface.co/mwhanna/qwen3-0.6b-transcoders-lowl0), [1.7B](https://huggingface.co/mwhanna/qwen3-1.7b-transcoders-lowl0), [4B](https://huggingface.co/mwhanna/qwen3-4b-transcoders), [8B](https://huggingface.co/mwhanna/qwen3-8b-transcoders), and [14B](https://huggingface.co/mwhanna/qwen3-14b-transcoders-lowl0)
+
+## Active Maintainer
+[Michael Hanna](https://hannamw.github.io/) ([@hannamw](https://github.com/hannamw)) is the primary maintainer, with support from [Decode Research](https://decoderesearch.org).
 
 ## Cite
 You can cite this library as follows:

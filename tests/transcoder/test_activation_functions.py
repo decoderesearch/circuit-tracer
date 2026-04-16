@@ -1,6 +1,16 @@
+import gc
+
+import pytest
 import torch
 
 from circuit_tracer.transcoder.activation_functions import JumpReLU, TopK
+
+
+@pytest.fixture(autouse=True)
+def cleanup_cuda():
+    yield
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 def test_JumpReLU_filters_activations_below_threshold():

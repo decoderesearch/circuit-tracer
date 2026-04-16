@@ -21,4 +21,4 @@ jobs:
       - name: check types
         run: python -m pyright
       - name: run tests
-        run: python -m pytest tests
+        run: python -m pytest tests -m "not requires_disk"

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 import time
@@ -8,13 +10,19 @@ from transformers import AutoTokenizer
 
 from circuit_tracer.frontend.graph_models import Metadata, Model, Node, QParams
 from circuit_tracer.frontend.utils import add_graph_metadata
-from circuit_tracer.graph import Graph, prune_graph
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from circuit_tracer.graph import Graph
+
 
 logger = logging.getLogger(__name__)
 
 
 def load_graph_data(file_path) -> Graph:
     """Load graph data from a PyTorch file."""
+    from circuit_tracer.graph import Graph
+
     start_time = time.time()
     graph = Graph.from_pt(file_path)
     time_ms = (time.time() - start_time) * 1000
@@ -53,10 +61,16 @@ def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
             )
         elif node_idx in range(token_end_idx, len(cumulative_scores)):
             pos = node_idx - token_end_idx
+
+            # vocab_idx can be either a valid token_id (< vocab_size) or a virtual
+            # index (>= vocab_size) for arbitrary strings/functions thereof. The virtual indices
+            # encode the position in the logit_targets list as: vocab_size + position.
+            token, vocab_idx = graph.logit_targets[pos]
+
             nodes[node_idx] = Node.logit_node(
                 pos=graph.n_pos - 1,
-                vocab_idx=graph.logit_tokens[pos],
-                token=tokenizer.decode(graph.logit_tokens[pos]),
+                vocab_idx=vocab_idx,
+                token=token,
                 target_logit=pos == 0,
                 token_prob=graph.logit_probabilities[pos].item(),
                 num_layers=layers,
@@ -152,6 +166,9 @@ def create_graph_files(
     node_threshold=0.8,
     edge_threshold=0.98,
 ):
+    # Import Graph/prune_graph locally to avoid circular import at module import time
+    from circuit_tracer.graph import Graph, prune_graph
+
     total_start_time = time.time()
 
     if isinstance(graph_or_path, Graph):

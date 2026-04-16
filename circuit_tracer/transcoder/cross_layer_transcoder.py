@@ -1,10 +1,11 @@
 import glob
 import os
-
+import warnings
 
 import numpy as np
 import torch
 from safetensors import safe_open
+from safetensors.torch import save_file, load_file
 from torch.nn import functional as F
 
 from circuit_tracer.transcoder.activation_functions import JumpReLU
@@ -38,6 +39,7 @@ class CrossLayerTranscoder(torch.nn.Module):
         W_dec: Decoder weights (lazily loaded) for cross-layer outputs
         b_enc: Encoder biases [n_layers, d_transcoder]
         b_dec: Decoder biases [n_layers, d_model]
+        W_skip: Optional skip connection weights (https://arxiv.org/abs/2501.18823)
         activation_function: Sparsity-inducing nonlinearity (default: ReLU)
         lazy_decoder: Whether to load decoder weights on-demand to save memory
         feature_input_hook: Hook point where features read from (e.g., "hook_resid_mid")
@@ -51,6 +53,7 @@ class CrossLayerTranscoder(torch.nn.Module):
         d_transcoder: int,
         d_model: int,
         activation_function: str = "relu",
+        skip_connection: bool = False,
         lazy_decoder=True,
         lazy_encoder=False,
         feature_input_hook: str = "hook_resid_mid",
@@ -74,7 +77,7 @@ class CrossLayerTranscoder(torch.nn.Module):
 
         self.feature_input_hook = feature_input_hook
         self.feature_output_hook = feature_output_hook
-        self.skip_connection = False
+        self.skip_connection = skip_connection
         self.scan = scan
 
         if activation_function == "jump_relu":
@@ -100,13 +103,26 @@ class CrossLayerTranscoder(torch.nn.Module):
             self.W_dec = torch.nn.ParameterList(
                 [
                     torch.nn.Parameter(
-                        torch.zeros(d_transcoder, n_layers - i, d_model, device=device, dtype=dtype)
+                        torch.zeros(
+                            d_transcoder,
+                            n_layers - i,
+                            d_model,
+                            device=device,
+                            dtype=dtype,
+                        )
                     )
                     for i in range(n_layers)
                 ]
             )
         else:
             self.W_dec = None
+
+        if skip_connection:
+            self.W_skip = torch.nn.Parameter(
+                torch.zeros(n_layers, d_model, d_model, device=device, dtype=dtype)
+            )
+        else:
+            self.W_skip = None
 
     @property
     def device(self):
@@ -127,17 +143,21 @@ class CrossLayerTranscoder(torch.nn.Module):
         if layer_id is not None:
             # Load single layer encoder
             enc_file = os.path.join(self.clt_path, f"W_enc_{layer_id}.safetensors")
-            with safe_open(enc_file, framework="pt", device=self.device.type) as f:
-                return f.get_tensor(f"W_enc_{layer_id}").to(self.dtype)
+            with safe_open(enc_file, framework="pt", device=str(self.device)) as f:
+                return f.get_tensor(f"W_enc_{layer_id}").to(dtype=self.dtype)
 
         # Load all encoder weights
         W_enc = torch.zeros(
-            self.n_layers, self.d_transcoder, self.d_model, device=self.device, dtype=self.dtype
+            self.n_layers,
+            self.d_transcoder,
+            self.d_model,
+            device=self.device,
+            dtype=self.dtype,
         )
         for i in range(self.n_layers):
             enc_file = os.path.join(self.clt_path, f"W_enc_{i}.safetensors")
-            with safe_open(enc_file, framework="pt", device=self.device.type) as f:
-                W_enc[i] = f.get_tensor(f"W_enc_{i}").to(self.dtype)
+            with safe_open(enc_file, framework="pt", device=str(self.device)) as f:
+                W_enc[i] = f.get_tensor(f"W_enc_{i}").to(dtype=self.dtype)
         return W_enc
 
     def encode(self, x):
@@ -161,7 +181,7 @@ class CrossLayerTranscoder(torch.nn.Module):
 
         return self.apply_activation_function(layer_id, features)
 
-    def encode_sparse(self, x, zero_first_pos=True):
+    def encode_sparse(self, x, zero_positions: slice = slice(0, 1)):
         """Encode input to sparse activations, processing one layer at a time for memory efficiency.
 
         This method processes layers sequentially and converts to sparse format immediately
@@ -186,8 +206,7 @@ class CrossLayerTranscoder(torch.nn.Module):
 
             layer_features = self.apply_activation_function(layer_id, layer_features)
 
-            if zero_first_pos:
-                layer_features[0] = 0
+            layer_features[zero_positions] = 0
 
             sparse_layer = layer_features.to_sparse()
             sparse_layers.append(sparse_layer)
@@ -204,14 +223,14 @@ class CrossLayerTranscoder(torch.nn.Module):
 
         if not self.lazy_decoder:
             assert self.W_dec is not None, "Decoder weights are not set"
-            return self.W_dec[layer_id][to_read].to(self.dtype)
+            return self.W_dec[layer_id][to_read].to(dtype=self.dtype)
 
         assert self.clt_path is not None, "CLT path is not set"
         path = os.path.join(self.clt_path, f"W_dec_{layer_id}.safetensors")
         if isinstance(to_read, torch.Tensor):
             to_read = to_read.cpu()
-        with safe_open(path, framework="pt", device=self.device.type) as f:
-            return f.get_slice(f"W_dec_{layer_id}")[to_read].to(self.dtype)
+        with safe_open(path, framework="pt", device=str(self.device)) as f:
+            return f.get_slice(f"W_dec_{layer_id}")[to_read].to(dtype=self.dtype)
 
     def select_decoder_vectors(self, features):
         if not features.is_sparse:
@@ -262,7 +281,9 @@ class CrossLayerTranscoder(torch.nn.Module):
 
         return pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_mapping
 
-    def compute_reconstruction(self, pos_ids, layer_ids, decoder_vectors):
+    def compute_reconstruction(
+        self, pos_ids, layer_ids, decoder_vectors, input_acts: torch.Tensor | None = None
+    ):
         n_pos = pos_ids.max() + 1
         flat_idx = layer_ids * n_pos + pos_ids
         recon = torch.zeros(
@@ -271,17 +292,35 @@ class CrossLayerTranscoder(torch.nn.Module):
             device=decoder_vectors.device,
             dtype=decoder_vectors.dtype,
         ).index_add_(0, flat_idx, decoder_vectors)
-        return recon.reshape(self.n_layers, n_pos, self.d_model) + self.b_dec[:, None]
+        recon = recon.reshape(self.n_layers, n_pos, self.d_model) + self.b_dec[:, None]
+        if self.W_skip is not None:
+            assert input_acts is not None, (
+                "Transcoder has skip connection but no input_acts were provided"
+            )
+            recon = recon + input_acts @ self.W_skip
+        return recon
 
-    def decode(self, features):
+    def decode(self, features, input_acts: torch.Tensor | None = None):
         pos_ids, layer_ids, feat_ids, decoder_vectors, _ = self.select_decoder_vectors(features)
-        return self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors)
+        return self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors, input_acts)
+
+    def compute_skip(self, layer_id: int, inputs):
+        if self.W_skip is not None:
+            return inputs @ self.W_skip[layer_id]
+        else:
+            raise ValueError("Transcoder has no skip connection")
 
     def forward(self, x):
         features = self.encode(x).to_sparse()
-        return self.decode(features)
+        decoded = self.decode(features)
 
-    def compute_attribution_components(self, inputs):
+        if self.W_skip is not None:
+            skip = x @ self.W_skip
+            decoded = decoded + skip
+
+        return decoded
+
+    def compute_attribution_components(self, inputs, zero_positions: slice = slice(0, 1)):
         """Extract active features and their encoder/decoder vectors for attribution.
 
         Args:
@@ -295,11 +334,11 @@ class CrossLayerTranscoder(torch.nn.Module):
                 - decoder_vecs: Concatenated decoder vectors (scaled by activations)
                 - encoder_to_decoder_map: Mapping from encoder to decoder indices
         """
-        features, encoder_vectors = self.encode_sparse(inputs, zero_first_pos=True)
+        features, encoder_vectors = self.encode_sparse(inputs, zero_positions=zero_positions)
         pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_to_decoder_map = (
             self.select_decoder_vectors(features)
         )
-        reconstruction = self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors)
+        reconstruction = self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors, inputs)
 
         return {
             "activation_matrix": features,
@@ -309,6 +348,43 @@ class CrossLayerTranscoder(torch.nn.Module):
             "encoder_to_decoder_map": encoder_to_decoder_map,
             "decoder_locations": torch.stack((layer_ids, pos_ids)),
         }
+
+    def to_safetensors(self, save_path: str):
+        """Save CLT to safetensors format compatible with lazy loading.
+
+        Saves the CLT state dict split across multiple safetensors files:
+        - W_enc_{i}.safetensors: Contains W_enc_{i}, b_enc_{i}, b_dec_{i}, and optionally threshold_{i}
+        - W_dec_{i}.safetensors: Contains W_dec_{i}
+
+        Args:
+            save_path: Directory path where the safetensors files will be saved
+        """
+        os.makedirs(save_path, exist_ok=True)
+
+        has_threshold = isinstance(self.activation_function, JumpReLU)
+
+        for i in range(self.n_layers):
+            # Save encoder weights and biases
+            enc_dict = {
+                f"W_enc_{i}": self._get_encoder_weights(i).cpu(),
+                f"b_enc_{i}": self.b_enc[i].cpu(),
+                f"b_dec_{i}": self.b_dec[i].cpu(),
+            }
+
+            if has_threshold:
+                enc_dict[f"threshold_{i}"] = self.activation_function.threshold[i].squeeze(0).cpu()
+
+            enc_path = os.path.join(save_path, f"W_enc_{i}.safetensors")
+            save_file(enc_dict, enc_path)
+
+            # Save decoder weights
+            if self.W_dec is not None:
+                dec_dict = {f"W_dec_{i}": self.W_dec[i].cpu()}
+            else:
+                dec_dict = {f"W_dec_{i}": self._get_decoder_vectors(i).cpu()}
+
+            dec_path = os.path.join(save_path, f"W_dec_{i}.safetensors")
+            save_file(dec_dict, dec_path)
 
 
 def load_clt(
@@ -355,6 +431,7 @@ def load_clt(
             d_transcoder,
             d_model,
             activation_function=act_fn,
+            skip_connection=state_dict.get("W_skip") is not None,
             lazy_decoder=lazy_decoder,
             lazy_encoder=lazy_encoder,
             feature_input_hook=feature_input_hook,
@@ -362,6 +439,108 @@ def load_clt(
             scan=scan,
             dtype=dtype,
             clt_path=clt_path,
+        )
+
+    instance.load_state_dict(state_dict, assign=True)
+
+    return instance
+
+
+def load_gemma_scope_2_clt(
+    paths: dict[int, str],
+    feature_input_hook: str = "hook_resid_mid",
+    feature_output_hook: str = "hook_mlp_out",
+    scan: str | list[str] | None = None,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.bfloat16,
+    lazy_decoder: bool = False,
+    lazy_encoder: bool = False,
+) -> CrossLayerTranscoder:
+    """Load a CrossLayerTranscoder from a GemmaScope2 JumpReLUMultiLayerSAE checkpoint.
+
+    Args:
+        path: Path to the checkpoint file
+        feature_input_hook: Hook point where features read from
+        feature_output_hook: Hook point where features write to
+        scan: Optional identifier for feature visualization
+        device: Device to load to
+        dtype: Data type to use
+        lazy_decoder: Whether to use lazy loading for decoder weights (not supported for GemmaScope2 format)
+        lazy_encoder: Whether to use lazy loading for encoder weights (not supported for GemmaScope2 format)
+
+    Returns:
+        CrossLayerTranscoder: The loaded transcoder
+    """
+    if device is None:
+        device = get_default_device()
+
+    if lazy_encoder or lazy_decoder:
+        warnings.warn(
+            "Lazy loading is not supported for GemmaScope2 format due to different key naming conventions. "
+            "Setting lazy_encoder=False and lazy_decoder=False.",
+            UserWarning,
+        )
+        lazy_encoder = False
+        lazy_decoder = False
+
+    # with safe_open(path, framework="pt", device=device.type) as f:
+    #     state_dict_raw = {k: f.get_tensor(k) for k in f.keys()}
+
+    params_list = []
+    for layer_idx in range(max(paths.keys())):
+        params = load_file(paths[layer_idx], device=device.type)
+        params_list.append(params)
+
+    state_dict_raw = {
+        k: torch.stack([params[k] for params in params_list]) for k in params_list[0].keys()
+    }
+
+    # Remap parameters from JumpReLUMultiLayerSAE to CrossLayerTranscoder format
+    # w_enc: (num_layers, d_in, d_sae) -> W_enc: (n_layers, d_transcoder, d_model)
+    W_enc = state_dict_raw["w_enc"].transpose(-1, -2).contiguous().to(device=device, dtype=dtype)
+
+    b_enc = state_dict_raw["b_enc"].to(device=device, dtype=dtype)
+    b_dec = state_dict_raw["b_dec"].to(device=device, dtype=dtype)
+
+    # threshold: (num_layers, d_sae) -> (n_layers, 1, d_transcoder)
+    threshold = state_dict_raw["threshold"].unsqueeze(1).to(device=device, dtype=dtype)
+
+    # Extract dimensions
+    n_layers, d_transcoder, d_model = W_enc.shape
+
+    # Handle w_dec: (num_layers, d_sae, num_layers, d_in)
+    # Need to create W_dec as ParameterList where W_dec[i] has shape (d_transcoder, n_layers - i, d_model)
+    w_dec_raw = state_dict_raw["w_dec"]
+
+    state_dict = {
+        "W_enc": W_enc,
+        "b_enc": b_enc,
+        "b_dec": b_dec,
+        "activation_function.threshold": threshold,
+    }
+
+    # Convert decoder weights
+    for i in range(n_layers):
+        # w_dec[i, :, i:, :] gives us (d_sae, n_layers - i, d_in)
+        state_dict[f"W_dec.{i}"] = w_dec_raw[i, :, i:, :].to(device=device, dtype=dtype)
+
+    if "affine_skip_connection" in state_dict_raw:
+        state_dict["W_skip"] = state_dict_raw["affine_skip_connection"]
+
+    # Create instance
+    with torch.device("meta"):
+        instance = CrossLayerTranscoder(
+            n_layers,
+            d_transcoder,
+            d_model,
+            activation_function="jump_relu",
+            skip_connection=("W_skip" in state_dict),
+            lazy_decoder=False,
+            lazy_encoder=False,
+            feature_input_hook=feature_input_hook,
+            feature_output_hook=feature_output_hook,
+            scan=scan,
+            dtype=dtype,
         )
 
     instance.load_state_dict(state_dict, assign=True)
@@ -380,7 +559,7 @@ def _load_state_dict(
 
     # Get dimensions from first file
     dec_file = "W_enc_0.safetensors"
-    with safe_open(os.path.join(clt_path, dec_file), framework="pt", device=device.type) as f:
+    with safe_open(os.path.join(clt_path, dec_file), framework="pt", device=str(device)) as f:
         d_transcoder, d_model = f.get_slice("W_enc_0").get_shape()
         has_threshold = "threshold_0" in f.keys()
 
@@ -403,7 +582,7 @@ def _load_state_dict(
     # Load all layers
     for i in range(n_layers):
         enc_file = f"W_enc_{i}.safetensors"
-        with safe_open(os.path.join(clt_path, enc_file), framework="pt", device=device.type) as f:
+        with safe_open(os.path.join(clt_path, enc_file), framework="pt", device=str(device)) as f:
             b_dec[i] = f.get_tensor(f"b_dec_{i}").to(dtype)
             b_enc[i] = f.get_tensor(f"b_enc_{i}").to(dtype)
 
@@ -418,7 +597,7 @@ def _load_state_dict(
         # Load W_dec for this layer if not lazy
         if not lazy_decoder:
             dec_file = os.path.join(clt_path, f"W_dec_{i}.safetensors")
-            with safe_open(dec_file, framework="pt", device=device.type) as f:
+            with safe_open(dec_file, framework="pt", device=str(device)) as f:
                 state_dict[f"W_dec.{i}"] = f.get_tensor(f"W_dec_{i}").to(dtype)
 
     return state_dict

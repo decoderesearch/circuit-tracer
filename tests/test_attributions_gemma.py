@@ -1,3 +1,4 @@
+import gc
 from functools import partial
 
 import numpy as np
@@ -7,14 +8,25 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformer_lens import HookedTransformerConfig
 
-from circuit_tracer import Graph, ReplacementModel, attribute
+from circuit_tracer import Graph, ReplacementModel
+from circuit_tracer.attribution.attribute_transformerlens import attribute
+from circuit_tracer.replacement_model.replacement_model_transformerlens import (
+    TransformerLensReplacementModel,
+)
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.utils import get_default_device
 
 
+@pytest.fixture(autouse=True)
+def cleanup_cuda():
+    yield
+    torch.cuda.empty_cache()
+    gc.collect()
+
+
 def verify_token_and_error_edges(
-    model: ReplacementModel,
+    model: TransformerLensReplacementModel,
     graph: Graph,
     act_atol=1e-3,
     act_rtol=1e-3,
@@ -24,7 +36,7 @@ def verify_token_and_error_edges(
     s = graph.input_tokens
     adjacency_matrix = graph.adjacency_matrix.to(get_default_device())
     active_features = graph.active_features.to(get_default_device())
-    logit_tokens = graph.logit_tokens.to(get_default_device())
+    logit_tokens = graph.logit_token_ids
     total_active_features = active_features.size(0)
     pos_start = 1  # ignore first token (BOS)
 
@@ -108,7 +120,7 @@ def verify_token_and_error_edges(
 
 
 def verify_feature_edges(
-    model: ReplacementModel,
+    model: TransformerLensReplacementModel,
     graph: Graph,
     n_samples: int = 100,
     act_atol=5e-4,
@@ -119,7 +131,7 @@ def verify_feature_edges(
     s = graph.input_tokens
     adjacency_matrix = graph.adjacency_matrix.to(get_default_device())
     active_features = graph.active_features.to(get_default_device())
-    logit_tokens = graph.logit_tokens.to(get_default_device())
+    logit_tokens = graph.logit_token_ids
     total_active_features = active_features.size(0)
 
     logits, activation_cache = model.get_activations(s, apply_activation_function=False)
@@ -139,7 +151,7 @@ def verify_feature_edges(
             [(layer, pos, feature_idx, new_activation)],
             constrained_layers=range(model.cfg.n_layers),
             apply_activation_function=False,
-        )
+        )  # type:ignore
         new_logits = new_logits.squeeze(0)
 
         assert new_activation_cache is not None
@@ -175,7 +187,7 @@ def verify_feature_edges(
         verify_intervention(expected_effects, layer, pos, feature_idx, new_activation)
 
 
-def load_dummy_gemma_model(cfg: HookedTransformerConfig):
+def load_dummy_gemma_model(cfg: HookedTransformerConfig) -> TransformerLensReplacementModel:
     transcoders = {
         layer_idx: SingleLayerTranscoder(
             cfg.d_model, cfg.d_model * 4, JumpReLU(torch.tensor(0.0), 0.1), layer_idx
@@ -187,9 +199,12 @@ def load_dummy_gemma_model(cfg: HookedTransformerConfig):
             nn.init.uniform_(param, a=-1, b=1)
 
     transcoder_set = TranscoderSet(
-        transcoders, feature_input_hook="mlp.hook_in", feature_output_hook="mlp.hook_out"
+        transcoders,
+        feature_input_hook="mlp.hook_in",
+        feature_output_hook="mlp.hook_out",
     )
     model = ReplacementModel.from_config(cfg, transcoder_set)
+    assert isinstance(model, TransformerLensReplacementModel)
 
     type(model.tokenizer).all_special_ids = property(lambda self: [0])  # type: ignore
 
@@ -204,7 +219,8 @@ def load_dummy_gemma_model(cfg: HookedTransformerConfig):
     return model
 
 
-def verify_small_gemma_model(s: torch.Tensor):
+def test_small_gemma_model():
+    s = torch.tensor([0, 3, 4, 3, 2, 5, 3, 8])
     gemma_small_cfg = {
         "n_layers": 2,
         "d_model": 8,
@@ -281,7 +297,8 @@ def verify_small_gemma_model(s: torch.Tensor):
     verify_feature_edges(model, graph)
 
 
-def verify_large_gemma_model(s: torch.Tensor):
+def test_large_gemma_model():
+    s = torch.tensor([0, 113, 24, 53, 27])
     gemma_large_cfg = {
         "n_layers": 16,
         "d_model": 64,
@@ -375,45 +392,30 @@ def verify_large_gemma_model(s: torch.Tensor):
     verify_feature_edges(model, graph)
 
 
-def verify_gemma_2_2b(s: str):
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
-    graph = attribute(s, model)
-
-    print("Changing logit softcap to 0, as the logits will otherwise be off.")
-    with model.zero_softcap():
-        verify_token_and_error_edges(model, graph)
-        verify_feature_edges(model, graph)
-
-
-def verify_gemma_2_2b_clt(s: str):
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mntss/clt-gemma-2-2b-426k")
-    graph = attribute(s, model)
-
-    print("Changing logit softcap to 0, as the logits will otherwise be off.")
-    with model.zero_softcap():
-        verify_token_and_error_edges(model, graph)
-        verify_feature_edges(model, graph)
-
-
-def test_small_gemma_model():
-    s = torch.tensor([0, 3, 4, 3, 2, 5, 3, 8])
-    verify_small_gemma_model(s)
-
-
-def test_large_gemma_model():
-    s = torch.tensor([0, 113, 24, 53, 27])
-    verify_large_gemma_model(s)
-
-
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_2_2b():
     s = "The National Digital Analytics Group (ND"
-    verify_gemma_2_2b(s)
+    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
+    assert isinstance(model, TransformerLensReplacementModel)
+    graph = attribute(s, model, batch_size=256)
+
+    print("Changing logit softcap to 0, as the logits will otherwise be off.")
+    with model.zero_softcap():
+        verify_token_and_error_edges(model, graph)
+        verify_feature_edges(model, graph)
 
 
-# def test_gemma_2_2b_clt():
-#     s = "The National Digital Analytics Group (ND"
-#     verify_gemma_2_2b_clt(s)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_gemma_2_2b_clt():
+    s = "The National Digital Analytics Group (ND"
+    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mntss/clt-gemma-2-2b-426k")
+    assert isinstance(model, TransformerLensReplacementModel)
+    graph = attribute(s, model, batch_size=256)
+
+    print("Changing logit softcap to 0, as the logits will otherwise be off.")
+    with model.zero_softcap():
+        verify_token_and_error_edges(model, graph)
+        verify_feature_edges(model, graph)
 
 
 if __name__ == "__main__":
@@ -421,4 +423,4 @@ if __name__ == "__main__":
     test_small_gemma_model()
     test_large_gemma_model()
     test_gemma_2_2b()
-    # test_gemma_2_2b_clt()  # This will pass, but is slow to run
+    test_gemma_2_2b_clt()  # This will pass, but is slow to run
