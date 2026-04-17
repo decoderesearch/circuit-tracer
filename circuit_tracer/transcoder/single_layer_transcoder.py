@@ -595,6 +595,12 @@ def load_transcoder_set(
     """
 
     if activation == "topk":
+        if scan == "facebook/crv-8b-instruct-transcoders":
+            warnings.warn(
+                """This top-k transcoder (facebook/crv-8b-instruct-transcoders) has a hardcoded value of k = 128.
+                In general, k should be set in the config.yaml"""
+            )
+            k = 128
         assert k is not None, "You must pass k if activation is topk"
         activation_fn = TopK(k)
     elif activation == "relu":
