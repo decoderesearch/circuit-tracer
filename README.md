@@ -97,6 +97,7 @@ It will tell you where the server is serving (something like `localhost:[port]`)
 - `--transcoder_set` (`-t`): The set of transcoders to use for attribution. Options:
   - HuggingFace repository ID (e.g., `mntss/gemma-scope-transcoders`, `username/repo-name@revision`)
   - Convenience shortcuts: `gemma` (GemmaScope transcoders) or `llama` (ReLU transcoders)
+  - Path to locally saved transcoders: `/path/to/local_transcoders/`
 
 **Graph File Creation**
 
@@ -130,6 +131,7 @@ You must set `--slug` and `--graph_file_dir`, or `--graph_output_path`, or both!
 
 **Server Parameters:**
 - `--port` (default: 8041): Port for the local server
+- `--features_dir`: (default: None) Path to the directory containing feature files for local server, if using local transcoders
 
 ### Examples
 

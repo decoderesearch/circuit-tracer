@@ -134,6 +134,12 @@ def main():
         help="Start a local server to visualize graphs after processing.",
     )
     attr_parser.add_argument("--port", type=int, default=8041, help="Port for the local server.")
+    attr_parser.add_argument(
+        "--features_dir",
+        type=str,
+        default=None,
+        help="Path to the directory containing feature files for local server, if using local transcoders (default: None)",
+    )
 
     # Start-server subcommand
     server_parser = subparsers.add_parser(
@@ -144,6 +150,12 @@ def main():
         type=str,
         required=True,
         help="Path to the directory containing graph JSON files.",
+    )
+    server_parser.add_argument(
+        "--features_dir",
+        type=str,
+        default=None,
+        help="Path to the directory containing feature files for local server, if using local transcoders (default: None)",
     )
     server_parser.add_argument("--port", type=int, default=8041, help="Port for the local server.")
 
@@ -264,7 +276,11 @@ def run_server(args):
 
     logging.info(f"Starting server on port {args.port}...")
     logging.info(f"Serving data from: {os.path.abspath(args.graph_file_dir)}")
-    server = serve(data_dir=args.graph_file_dir, port=args.port)
+    if args.features_dir:
+        if not os.path.isdir(args.features_dir):
+            raise ValueError(f"features_dir does not exist: {args.features_dir}")
+        logging.info(f"Using features directory: {os.path.abspath(args.features_dir)}")
+    server = serve(data_dir=args.graph_file_dir, port=args.port, features_dir=args.features_dir)
     try:
         logging.info("Press Ctrl+C to stop the server.")
         while True:
