@@ -131,7 +131,7 @@ You must set `--slug` and `--graph_file_dir`, or `--graph_output_path`, or both!
 
 **Server Parameters:**
 - `--port` (default: 8041): Port for the local server
-- `--features_dir`: (default: None) Path to the directory containing feature files for local server, if using local transcoders
+- `--features_dir` (default: None): Path to the directory containing feature files for local server, if using local transcoders
 
 ### Examples
 
