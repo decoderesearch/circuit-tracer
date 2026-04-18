@@ -45,6 +45,7 @@ The following transcoders are available for use with `circuit-tracer`; this mean
 - Qwen-3 PLTs: for Qwen-3 [0.6B](https://huggingface.co/mwhanna/qwen3-0.6b-transcoders-lowl0), [1.7B](https://huggingface.co/mwhanna/qwen3-1.7b-transcoders-lowl0), [4B](https://huggingface.co/mwhanna/qwen3-4b-transcoders), [8B](https://huggingface.co/mwhanna/qwen3-8b-transcoders), and [14B](https://huggingface.co/mwhanna/qwen3-14b-transcoders-lowl0)
 - [GPT-OSS (20B) CLT](https://huggingface.co/mntss/clt-131k)
 - Gemma-3 PLTs (originally from [GemmaScope-2](https://huggingface.co/google/gemma-scope-2)) can be found [here for models of size 270M, 1B, 4B, 12B, and 27B, PT and IT](https://huggingface.co/collections/mwhanna/gemma-scope-2-transcoders-circuit-tracer). These require using the `nnsight` backend.
+- Llama 3.1 (8B) Instruct: [TopK PLTs](https://huggingface.co/facebook/crv-8b-instruct-transcoders)
 
 
 ### Choosing a Backend
