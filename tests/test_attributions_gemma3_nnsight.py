@@ -396,6 +396,8 @@ def load_gemma3_with_dummy_transcoders():
 
 def load_gemma3_with_dummy_clt():
     cfg = gemma_3_config
+    assert cfg.num_hidden_layers is not None
+    assert cfg.hidden_size is not None
 
     clt = CrossLayerTranscoder(
         n_layers=cfg.num_hidden_layers,
