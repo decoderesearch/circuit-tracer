@@ -12,6 +12,7 @@ from nnsight.intervention.tracing.tracer import Barrier
 from nnsight import LanguageModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
+from circuit_tracer.replacement_model._validation import validate_single_sequence_inputs
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
@@ -486,6 +487,7 @@ class NNSightReplacementModel(LanguageModel):
             inputs (str): the inputs to attribute - hard coded to be a single string (no
                 batching) for now
         """
+        validate_single_sequence_inputs(inputs, "setup_attribution")
 
         if isinstance(inputs, str):
             tokens = self.ensure_tokenized(inputs)
@@ -555,6 +557,7 @@ class NNSightReplacementModel(LanguageModel):
         Returns:
             tuple[torch.Tensor, list[Callable]]: The freeze hooks needed to run the desired intervention.
         """
+        validate_single_sequence_inputs(inputs, "setup_intervention_with_freeze")
 
         def get_locs_to_freeze():
             # this needs to go in a function that is called only in a trace context! otherwise you can't get the .source twice
@@ -771,6 +774,7 @@ class NNSightReplacementModel(LanguageModel):
                 constrained_layers is not set), saving time. Activations are not returned.
                 Defaults to True.
         """
+        validate_single_sequence_inputs(inputs, "feature_intervention")
         activation_matrix, activation_fn = self.get_activation_fn(
             apply_activation_function=apply_activation_function, sparse=sparse
         )
@@ -890,6 +894,7 @@ class NNSightReplacementModel(LanguageModel):
             tuple[str, torch.Tensor, torch.Tensor | None]: A tuple of (generated_text,
                 logits, activations) where logits has shape ``(seq_len, vocab_size)`` (2-D).
         """
+        validate_single_sequence_inputs(inputs, "feature_intervention_generate")
 
         # remove verbose kwarg, which is valid for TL models but not NNsight ones.
         kwargs.pop("verbose", None)
