@@ -21,7 +21,7 @@ class TransformerLens_NNSight_Mapping:
 # Create an instance with the original configuration values
 gemma_2_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma2ForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
         "model.layers[{layer}].post_attention_layernorm.source.self__norm_0.source.torch_rsqrt_0",
@@ -46,7 +46,7 @@ gemma_2_mapping = TransformerLens_NNSight_Mapping(
 # Create an instance with the original configuration values
 gemma_3_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma3ForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
         "model.layers[{layer}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
@@ -73,7 +73,7 @@ gemma_3_mapping = TransformerLens_NNSight_Mapping(
 
 gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma3ForConditionalGeneration",
-    attention_location_pattern="language_model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern="language_model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "language_model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
         "language_model.layers[{layer}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
@@ -101,7 +101,7 @@ gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
 # Create an instance with the original configuration values
 llama_3_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="LlamaForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.mean_0",
         "model.layers[{layer}].post_attention_layernorm.source.mean_0",
@@ -122,7 +122,7 @@ llama_3_mapping = TransformerLens_NNSight_Mapping(
 # Create an instance with the original configuration values
 qwen_3_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Qwen3ForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.mean_0",
         "model.layers[{layer}].post_attention_layernorm.source.mean_0",
@@ -141,7 +141,7 @@ qwen_3_mapping = TransformerLens_NNSight_Mapping(
 
 gpt_oss_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="GptOssForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_0.source.nn_functional_dropout_0",
+    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.mean_0",
         "model.layers[{layer}].post_attention_layernorm.source.mean_0",

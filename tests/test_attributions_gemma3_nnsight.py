@@ -354,7 +354,7 @@ def load_dummy_gemma_model(cfg: AutoConfig):
     for _, param in model.named_parameters():
         nn.init.uniform_(param, a=-1, b=1)
 
-    for transcoder in model.transcoders[0]:  # type:ignore
+    for transcoder in model.transcoders._module:  # type:ignore
         nn.init.uniform_(transcoder.activation_function.threshold, a=0, b=1)
 
     return model
@@ -387,7 +387,7 @@ def load_gemma3_with_dummy_transcoders():
 
     _, activations = model.get_activations("The National Digital Analytics Group (ND")
 
-    for layer_idx, transcoder in enumerate(model.transcoders[0]):  # type:ignore
+    for layer_idx, transcoder in enumerate(model.transcoders._module):  # type:ignore
         layer_acts = activations[layer_idx : layer_idx + 1]
         set_l0_via_thresholds(layer_acts, transcoder.activation_function.threshold, target_l0=16)
 

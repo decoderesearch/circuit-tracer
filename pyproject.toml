@@ -9,7 +9,8 @@ dependencies = [
     "huggingface_hub<1.0.0",
     "ipykernel>=6.29.5,<7.0.0",
     "ipywidgets>=8.1.7",
-    "nnsight==0.6.1",
+    # 0.8 is not on PyPI yet; swap this for "nnsight>=0.8.0" once it is released.
+    "nnsight @ git+https://github.com/ndif-team/nnsight.git@0.8",
     "numpy>=1.24.0",
     "pydantic>=2.0.0",
     "safetensors>=0.5.0",

@@ -8,8 +8,8 @@ from typing import Callable, Iterator, Literal, cast
 import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from nnsight.intervention.tracing.tracer import Barrier
-from nnsight import LanguageModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
+from nnsight.intervention.barrier import Barrier
+from nnsight import TransformersModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
@@ -22,8 +22,6 @@ from circuit_tracer.utils.tl_nnsight_mapping import (
 )
 
 NNSIGHT_CONFIG.APP.PYMOUNT = False
-NNSIGHT_CONFIG.APP.CROSS_INVOKER = False
-NNSIGHT_CONFIG.APP.TRACE_CACHING = True
 
 # Type definition for an intervention tuple (layer, position, feature_idx, value)
 Intervention = tuple[
@@ -48,7 +46,7 @@ class EnvoyWrapper:
         setattr(self.envoy, self.input_output, value)
 
 
-class NNSightReplacementModel(LanguageModel):
+class NNSightReplacementModel(TransformersModel):
     d_transcoder: int
     transcoders: TranscoderSet | CrossLayerTranscoder
     feature_input_locs: list[nn.Module]  # type: ignore
@@ -82,7 +80,13 @@ class NNSightReplacementModel(LanguageModel):
         hf_model = AutoModelForCausalLM.from_config(config)
         hf_tokenizer = AutoTokenizer.from_pretrained(config._name_or_path)  # type: ignore
 
-        model = cls(hf_model, tokenizer=hf_tokenizer, dispatch=True, **kwargs)
+        model = cls(
+            hf_model,
+            tokenizer=hf_tokenizer,
+            task="text-generation",
+            dispatch=True,
+            **kwargs,
+        )
         model.config = config  # type: ignore
         model._configure_replacement_model(transcoders)
         return model
@@ -106,13 +110,13 @@ class NNSightReplacementModel(LanguageModel):
             NNSightReplacementModel: The loaded NNSightReplacementModel
         """
         # The goal is to build a ReplacementModel instance *using* the parent
-        # LanguageModel.__init__.  Since we are in a `@classmethod`, we don't yet have
+        # TransformersModel.__init__.  Since we are in a `@classmethod`, we don't yet have
         # an object (`self`) to pass to `super().__init__`.  We create an _uninitialised_
         # instance with `__new__`, then run the parent initialiser on it.
 
         # 1. Allocate the instance without initialising it.
         model = cls.__new__(cls)
-        # 2. Call the parent (LanguageModel) initializer on this instance.
+        # 2. Call the parent (TransformersModel) initializer on this instance.
 
         # Convert ``torch.device`` to a HF-compatible device map
         if isinstance(device, torch.device):
@@ -138,6 +142,7 @@ class NNSightReplacementModel(LanguageModel):
 
         super(cls, model).__init__(
             model_name,
+            task="text-generation",
             config=config,
             device_map=device_map,
             dispatch=True,
@@ -929,7 +934,7 @@ class NNSightReplacementModel(LanguageModel):
             direct_effects_barrier = tracer.barrier(2) if constrained_layers else None
 
             with tracer.invoke(inputs):
-                with tracer.iter[:] as act_idx:
+                for act_idx in tracer.iter[:]:
                     current_intervention_layers = (
                         intervention_layers if act_idx == 0 else converted_intervention_layers
                     )
@@ -951,12 +956,12 @@ class NNSightReplacementModel(LanguageModel):
 
             for freeze_fn in freeze_fns:
                 with tracer.invoke():
-                    with tracer.iter[:1]:
+                    for _ in tracer.iter[:1]:
                         freeze_fn(direct_effects_barrier=direct_effects_barrier)
 
             all_logits = save(list())  # type: ignore
             with tracer.invoke():
-                with tracer.iter[:] as idx:
+                for idx in tracer.iter[:]:
                     logits = self._perform_feature_intervention(
                         inputs=inputs,
                         interventions=(interventions if idx == 0 else converted_interventions),
@@ -971,7 +976,7 @@ class NNSightReplacementModel(LanguageModel):
                     all_logits.append(logits.squeeze(0))
 
             with tracer.invoke():
-                out = save(self.generator.output)
+                out = save(tracer.result)
         return (
             tokenizer.decode(out.squeeze(0)),
             torch.cat(all_logits, dim=0),

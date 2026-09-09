@@ -59,7 +59,7 @@ Locally saved transcoders can be loaded by using `ReplacementModel.from_pretrain
 ### Choosing a Backend
 By default, `circuit-tracer` creates a `ReplacementModel` that inherits from the `TransformerLens` `HookedTransformer` class. However, `TransformerLens` does not support all HuggingFace models; it only supports those implemented in `TransformerLens`. 
 
-Creating a `ReplacementModel` with `backend='nnsight'` will create an `nnsight`-backed `ReplacementModel` that inherits from its `LanguageModel` class; this supports most HuggingFace models. That is, you can create an `nnsight` `ReplacementModel` using `ReplacementModel.from_pretrained(model_name, backend='nnsight')`. Note, however, that the `nnsight` backend is still experimental: it is slower and less memory-efficient, and may not provide all of the functionality of the `TransformerLens` version.
+Creating a `ReplacementModel` with `backend='nnsight'` will create an `nnsight`-backed `ReplacementModel` that inherits from its `TransformersModel` class; this supports most HuggingFace models. That is, you can create an `nnsight` `ReplacementModel` using `ReplacementModel.from_pretrained(model_name, backend='nnsight')`. Note, however, that the `nnsight` backend is still experimental: it is slower and less memory-efficient, and may not provide all of the functionality of the `TransformerLens` version.
 
 ### Caching
 In order to use the `lazy_decoder` and `lazy_encoder` options on transcoders, they must be stored in `circuit-tracer`-compatible format. While many transcoders have been uploaded in that format to HuggingFace, this requires large amounts of storage. `circuit-tracer` now supports instead creating a local cache of models, by calling e.g.
