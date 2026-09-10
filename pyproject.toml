@@ -9,10 +9,11 @@ dependencies = [
     "huggingface_hub<1.0.0",
     "ipykernel>=6.29.5,<7.0.0",
     "ipywidgets>=8.1.7",
-    # 0.8 is tagged but not yet on PyPI (latest there is 0.7.0), so this pins the
-    # release candidate by tag rather than tracking a branch. Swap it for
-    # "nnsight>=0.8.0" once 0.8.0 is published.
-    "nnsight @ git+https://github.com/ndif-team/nnsight.git@v0.8.0.rc1",
+    # 0.8 is a pre-release on PyPI, so the lower bound names it explicitly:
+    # a bare ">=0.8.0" would not match 0.8.0rc1, and naming a pre-release is
+    # what lets the resolver consider one at all. The upper bound keeps that
+    # permission from spilling onto a future 0.9 pre-release.
+    "nnsight>=0.8.0rc1,<0.9",
     "numpy>=1.24.0",
     "pydantic>=2.0.0",
     "safetensors>=0.5.0",
@@ -33,11 +34,6 @@ circuit-tracer = "circuit_tracer.__main__:main"
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
-
-# The nnsight dependency is a git URL while 0.8 is unpublished, and hatchling
-# refuses a direct reference in `project.dependencies` without this.
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.hatch.version]
 source = "vcs"
