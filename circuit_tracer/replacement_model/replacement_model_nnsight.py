@@ -327,7 +327,11 @@ class NNSightReplacementModel(TransformersModel):
                 )
 
                 if not (append and len(activation_matrix[layer]) > 0):  # type:ignore
-                    transcoder_acts[self.zero_positions] = 0
+                    # Zero along the position axis. For batched inputs the batch dim
+                    # survives the squeeze, so indexing with zero_positions directly
+                    # would zero leading *sequences* instead of leading *positions*
+                    # (https://github.com/safety-research/circuit-tracer/issues/67).
+                    transcoder_acts[..., self.zero_positions, :] = 0
 
                 if sparse:
                     transcoder_acts = transcoder_acts.to_sparse()
