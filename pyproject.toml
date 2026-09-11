@@ -9,10 +9,7 @@ dependencies = [
     "huggingface_hub<1.0.0",
     "ipykernel>=6.29.5,<7.0.0",
     "ipywidgets>=8.1.7",
-    # 0.8 is a pre-release on PyPI, so the lower bound names it explicitly:
-    # a bare ">=0.8.0" would not match 0.8.0rc1, and naming a pre-release is
-    # what lets the resolver consider one at all. The upper bound keeps that
-    # permission from spilling onto a future 0.9 pre-release.
+    # 0.8 is a pre-release on PyPI, so the lower bound names it explicitly
     "nnsight>=0.8.0rc1,<0.9",
     "numpy>=1.24.0",
     "pydantic>=2.0.0",

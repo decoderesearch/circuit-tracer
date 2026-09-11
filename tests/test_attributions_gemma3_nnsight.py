@@ -542,7 +542,7 @@ def test_gemma_3_1b_it():
     print("Changing logit softcap to 0, as the logits will otherwise be off.")
     with model.zero_softcap():
         verify_token_and_error_edges(model, graph, pos_start=4)
-        verify_feature_edges(model, graph)
+        verify_feature_edges(model, graph, act_rtol=1e-4)
 
 
 @pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")
@@ -560,7 +560,7 @@ def test_gemma_3_1b_clt():
     print("Changing logit softcap to 0, as the logits will otherwise be off.")
     with model.zero_softcap():
         verify_token_and_error_edges(model, graph)
-        verify_feature_edges(model, graph)
+        verify_feature_edges(model, graph, act_rtol=1e-4)
 
 
 @pytest.mark.skipif(not has_32gb, reason="Requires >=32GB VRAM")

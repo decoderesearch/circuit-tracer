@@ -27,10 +27,10 @@ index depends on how many times the forward binds the name before calling it. Ev
 architecture mapped here writes the same three lines --
 
 ```python
-attention_interface: Callable = eager_attention_forward          # attention_interface_0
+attention_interface: Callable = eager_attention_forward  # attention_interface_0
 if self.config._attn_implementation != "eager":
-    attention_interface = ALL_ATTENTION_FUNCTIONS[...]           # attention_interface_1
-attn_output, attn_weights = attention_interface(...)             # attention_interface_2
+    attention_interface = ALL_ATTENTION_FUNCTIONS[...]  # attention_interface_1
+attn_output, attn_weights = attention_interface(...)  # attention_interface_2
 ```
 
 -- so the *call* is `attention_interface_2`, and `_0` / `_1` are the two assignments.
