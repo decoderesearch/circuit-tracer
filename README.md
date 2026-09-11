@@ -29,6 +29,7 @@ We also make two simple demos of attribution and intervention available, for tho
 - [`demos/attribute_demo.ipynb`](https://github.com/safety-research/circuit-tracer/blob/main/demos/attribute_demo.ipynb): Demonstrates how to find circuits and visualize them. 
 - [`demos/attribution_targets_demo.ipynb`](https://github.com/safety-research/circuit-tracer/blob/main/demos/attribution_targets_demo.ipynb): Demonstrates how to find circuits by specifying attribution targets, i.e. specific logits (or related quantities) that you wish to attribute from. 
 - [`demos/intervention_demo.ipynb`](https://github.com/safety-research/circuit-tracer/blob/main/demos/intervention_demo.ipynb): Demonstrates how to perform interventions on models. 
+- [`demos/long_context_memory_estimator_demo.ipynb`](demos/long_context_memory_estimator_demo.ipynb): Demonstrates how to estimate dense graph memory before running long-context attribution.
 
 We finally provide demos that dig deeper into specific, pre-computed and pre-annotated attribution graphs, performing interventions to demonstrate the correctness of the annotated graph:
 - [`demos/gemma_demo.ipynb`](https://github.com/safety-research/circuit-tracer/blob/main/demos/gemma_demo.ipynb): Explores graphs from Gemma 2 (2B).
@@ -153,6 +154,22 @@ circuit-tracer attribute \
   --transcoder_set llama \
   --graph_output_path france_capital.pt
 ```
+
+**Estimate dense graph memory before a long-context trace:**
+```
+circuit-tracer estimate-memory \
+  --tokens 6000 \
+  --layers 26 \
+  --max_feature_nodes 7500 \
+  --n_logits 10 \
+  --dtype float16 \
+  --available_memory_gib 80
+```
+
+This command does not load a model or transcoders. It estimates the dense adjacency matrix,
+graph-pruning intermediates, and graph metadata tensors so you can catch likely OOM cases before
+starting an expensive attribution run. For details and rationale, see
+[`docs/long_context_memory_estimator.md`](docs/long_context_memory_estimator.md).
 
 ### Graph Annotation
 When using the `--server` option, your browser will open to a local visualization interface. The interface is the same as in [the original papers](https://transformer-circuits.pub/2025/attribution-graphs/methods.html) (frontend available [here](https://github.com/anthropics/attribution-graphs-frontend)).

@@ -159,12 +159,69 @@ def main():
     )
     server_parser.add_argument("--port", type=int, default=8041, help="Port for the local server.")
 
+    # Estimate-memory subcommand
+    estimate_parser = subparsers.add_parser(
+        "estimate-memory",
+        help="Estimate dense attribution-graph memory before running a trace",
+    )
+    estimate_parser.add_argument(
+        "--tokens",
+        type=int,
+        required=True,
+        help="Prompt length after tokenization.",
+    )
+    estimate_parser.add_argument(
+        "--layers",
+        type=int,
+        required=True,
+        help="Number of transformer layers in the model.",
+    )
+    estimate_parser.add_argument(
+        "--max_feature_nodes",
+        type=int,
+        default=7500,
+        help="Maximum number of feature nodes retained during attribution.",
+    )
+    estimate_parser.add_argument(
+        "--n_logits",
+        type=int,
+        default=10,
+        help="Number of logit target nodes.",
+    )
+    estimate_parser.add_argument(
+        "--dtype",
+        type=str,
+        choices=["float64", "fp64", "float32", "fp32", "bfloat16", "bf16", "float16", "fp16"],
+        default="float32",
+        help="Floating point dtype for dense graph tensors.",
+    )
+    estimate_parser.add_argument(
+        "--available_memory_gib",
+        type=float,
+        default=None,
+        help="Optional device memory budget in GiB.",
+    )
+    estimate_parser.add_argument(
+        "--safety_fraction",
+        type=float,
+        default=0.8,
+        help="Fraction of available memory treated as usable.",
+    )
+    estimate_parser.add_argument(
+        "--format",
+        choices=["markdown", "json"],
+        default="markdown",
+        help="Output format.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "attribute":
         run_attribution(args, attr_parser)
-    if args.command == "start-server" or args.server:
+    elif args.command == "start-server" or getattr(args, "server", False):
         run_server(args)
+    elif args.command == "estimate-memory":
+        run_estimate_memory(args)
 
 
 def run_attribution(args, parser):
@@ -290,6 +347,25 @@ def run_server(args):
     except KeyboardInterrupt:
         logging.info("Stopping server...")
         server.stop()
+
+
+def run_estimate_memory(args):
+    from circuit_tracer.utils.memory_estimation import estimate_graph_memory
+
+    estimate = estimate_graph_memory(
+        n_tokens=args.tokens,
+        n_layers=args.layers,
+        max_feature_nodes=args.max_feature_nodes,
+        n_logits=args.n_logits,
+        dtype=args.dtype,
+        available_memory_gib=args.available_memory_gib,
+        safety_fraction=args.safety_fraction,
+    )
+
+    if args.format == "json":
+        print(estimate.to_json())
+    else:
+        print(estimate.to_markdown())
 
 
 if __name__ == "__main__":
