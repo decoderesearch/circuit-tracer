@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      ground_truth_sets:
+        description: >-
+          Transcoder sets for the ground-truth job. "default" is gemma-2-2b gemma-scope on a 16 GB
+          card. "all" adds the CLT (160 GiB) and Qwen3-4B (57 GiB) sets on a 48 GB card with a
+          300 GB disk.
+        type: choice
+        default: default
+        options: [default, all]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,3 +32,61 @@ jobs:
         run: python -m pyright
       - name: run tests
         run: python -m pytest tests -m "not requires_disk"
+
+  # tests/test_graph_ground_truth.py on a real GPU: a graph built here, on each backend, against the
+  # graph production Neuronpedia built from the same request. The `build` job has no GPU, so there
+  # these tests skip.
+  #
+  # Runner: machine.dev (https://machine.dev), a managed GPU runner picked with one `runs-on` label,
+  # CUDA preinstalled, billed per minute. T4 is the 16 GB card; the default case peaks at 9.6 GiB
+  # on transformerlens and ~7 GiB on nnsight and interp_engine. The 64 GB RAM tier is not optional:
+  # transformerlens builds gemma-2-2b on the CPU before it moves it, and that load peaks above
+  # 27 GB of RSS. Spot, because the job is three minutes and has no state: an interruption is a
+  # re-run, at a quarter of the on-demand price. The label is read from the GROUND_TRUTH_RUNS_ON
+  # repository variable so the vendor or the card can change without editing this file.
+  #
+  # Setup: connect the GitHub org to machine.dev and enable self-hosted runners for this repo, then
+  # set the repository secret HF_TOKEN (google/gemma-2-2b is gated).
+  #
+  # The weights are not cached: gemma-2-2b plus its transcoders is ~13 GB, over the 10 GB a
+  # repository's Actions cache holds. They download on every run.
+  ground-truth:
+    runs-on: ${{ inputs.ground_truth_sets == 'all' && 'machine/gpu=l40s/cpu=16/ram=128/disk_size=300/tenancy=spot' || vars.GROUND_TRUTH_RUNS_ON || 'machine/gpu=t4/cpu=16/ram=64/tenancy=spot' }}
+    # Managed runners bill per minute. The default run took 3 minutes on its first pass; "all"
+    # downloads 220 GiB of transcoders first.
+    timeout-minutes: ${{ inputs.ground_truth_sets == 'all' && 240 || 45 }}
+    concurrency:
+      group: ground-truth-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GPU sanity (driver present)
+        run: nvidia-smi || { echo "::error::No GPU visible on this runner"; exit 1; }
+
+      - name: Check HF_TOKEN
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set; google/gemma-2-2b is gated"
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+
+      # `-rP` puts each passing test's captured stdout in the summary; the test prints its peak
+      # GPU memory there, so the card can be sized from evidence. An empty `-m` is no filter.
+      - name: Run ground-truth tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MARKERS: ${{ inputs.ground_truth_sets == 'all' && '' || 'not requires_disk' }}
+        run: .venv/bin/python -m pytest tests/test_graph_ground_truth.py -m "$MARKERS" -v -rP --durations=0

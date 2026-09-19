@@ -4,8 +4,8 @@ import gc
 from collections.abc import Sequence
 from typing import cast
 
-import torch
 import pytest
+import torch
 
 from circuit_tracer import Graph, ReplacementModel
 from circuit_tracer.attribution.attribute import attribute
@@ -589,16 +589,8 @@ def _get_top_features(graph: Graph, n: int = 10) -> list[tuple[int, int, int]]:
     return top_features
 
 
-def _get_unembed_weights(model, backend: str):
-    """Helper to get unembedding weights in a backend-agnostic way."""
-    if backend == "transformerlens":
-        return model.unembed.W_U  # (d_model, d_vocab)
-    else:
-        return model.unembed_weight  # (d_vocab, d_model) for NNSight
-
-
 def _build_custom_diff_target(
-    model, prompt: str, token_x: str, token_y: str, backend: str
+    model, prompt: str, token_x: str, token_y: str
 ) -> tuple[CustomTarget, int, int]:
     """Build a CustomTarget representing logit(x) - logit(y) from the model's unembed matrix.
 
@@ -615,18 +607,8 @@ def _build_custom_diff_target(
         logits, _ = model.get_activations(input_ids)
     last_logits = logits.squeeze(0)[-1]  # (d_vocab,)
 
-    # Auto-detect matrix orientation by matching against vocabulary size
-    d_vocab = tokenizer.vocab_size
-    unembed = _get_unembed_weights(model, backend)
-    if unembed.shape[0] == d_vocab:
-        vec_x = unembed[idx_x]  # (d_model,)
-        vec_y = unembed[idx_y]  # (d_model,)
-    else:
-        # Shape is (d_model, d_vocab) – second axis is vocabulary (e.g., TransformerLens)
-        vec_x = unembed[:, idx_x]  # (d_model,)
-        vec_y = unembed[:, idx_y]  # (d_model,)
-
-    diff_vec = vec_x - vec_y
+    unembed = model.unembed_weight  # (d_vocab, d_model) on every backend
+    diff_vec = unembed[idx_x] - unembed[idx_y]
     # Use the absolute difference in softmax probabilities as weight
     probs = torch.softmax(last_logits, dim=-1)
     diff_prob = (probs[idx_x] - probs[idx_y]).abs().item()
@@ -646,12 +628,10 @@ def _cfg_backend(backend: str):
     if backend == "transformerlens":
         model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma")
         n_layers_range = range(model.cfg.n_layers)  # type: ignore
-        unembed_proj = model.unembed.W_U
     else:
         model = ReplacementModel.from_pretrained("google/gemma-2-2b", "gemma", backend="nnsight")
         n_layers_range = range(model.config.num_hidden_layers)  # type: ignore
-        unembed_proj = model.unembed_weight
-    return model, n_layers_range, unembed_proj
+    return model, n_layers_range, model.unembed_weight
 
 
 def _run_attribution_format_consistency(backend: str):
@@ -786,9 +766,7 @@ def _run_custom_target_correctness(
     token_x, token_y = "▁Austin", "▁Dallas"
 
     model, n_layers_range, _ = _cfg_backend(backend)
-    custom_target, idx_x, idx_y = _build_custom_diff_target(
-        model, prompt, token_x, token_y, backend
-    )
+    custom_target, idx_x, idx_y = _build_custom_diff_target(model, prompt, token_x, token_y)
 
     graph = attribute(prompt, model, attribution_targets=[custom_target], batch_size=256)
 

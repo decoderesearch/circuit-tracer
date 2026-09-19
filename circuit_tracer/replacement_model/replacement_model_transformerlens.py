@@ -1,4 +1,3 @@
-import warnings
 from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -16,14 +15,8 @@ from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
-
-# Type definition for an intervention tuple (layer, position, feature_idx, value)
-Intervention = tuple[
-    int | torch.Tensor,
-    int | slice | torch.Tensor,
-    int | torch.Tensor,
-    int | float | torch.Tensor,
-]
+from circuit_tracer.utils.interventions import Intervention, convert_open_ended_interventions
+from circuit_tracer.utils.tokenization import ensure_tokenized
 
 
 class ReplacementMLP(nn.Module):
@@ -71,6 +64,21 @@ class TransformerLensReplacementModel(HookedTransformer):
     skip_transcoder: bool
     scan_name: str | list[str] | None
     backend: Literal["transformerlens"]
+
+    # The two weight accessors every backend shares, so that code holding a `ReplacementModel` can
+    # ask for the embedding matrices without first asking which backend it holds. Both are
+    # `[d_vocab, d_model]`, one row per token: that is what `embed_weight` already means on all
+    # three, and `unembed_weight` on the other two, so `W_U` is the odd one out and is transposed
+    # here rather than the convention bending around it. TransformerLens' own `W_E`/`W_U` stay
+    # exactly as they are for code that wants them in TL's terms.
+
+    @property
+    def embed_weight(self) -> torch.Tensor:
+        return self.W_E
+
+    @property
+    def unembed_weight(self) -> torch.Tensor:
+        return self.W_U.T
 
     @classmethod
     def from_config(
@@ -370,56 +378,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             ValueError: If tensor has wrong shape (must be 1-D or 2-D with batch size 1)
         """
 
-        if isinstance(prompt, str):
-            tokens = self.tokenizer(
-                prompt, return_tensors="pt", add_special_tokens=False
-            ).input_ids.squeeze(0)  # type: ignore
-        elif isinstance(prompt, torch.Tensor):
-            tokens = prompt.squeeze()
-        elif isinstance(prompt, list):
-            tokens = torch.tensor(prompt, dtype=torch.long).squeeze()
-        else:
-            raise TypeError(f"Unsupported prompt type: {type(prompt)}")
-
-        if tokens.ndim > 1:
-            raise ValueError(f"Tensor must be 1-D, got shape {tokens.shape}")
-
-        tokens = tokens.to(self.cfg.device)
-
-        gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
-        if gemma_3_it:
-            ignore_prefix = torch.tensor(
-                [2, 105, 2364, 107], dtype=tokens.dtype, device=tokens.device
-            )
-            tokenization_error = (
-                "Input tokens should start with <bos><start_of_turn>user\n, but got {tokens}"
-            )
-            assert tokens.size(0) >= 4 and torch.all(tokens[:4] == ignore_prefix), (
-                tokenization_error.format(tokens=self.tokenizer.decode(tokens.cpu().tolist()))  # type: ignore
-            )
-            return tokens
-
-        # Check if a special token is already present at the beginning
-        if tokens[0] in self.tokenizer.all_special_ids:  # type: ignore
-            return tokens
-
-        # Prepend a special token to avoid artifacts at position 0
-        candidate_bos_token_ids = [
-            self.tokenizer.bos_token_id,  # type: ignore
-            self.tokenizer.pad_token_id,  # type: ignore
-            self.tokenizer.eos_token_id,  # type: ignore
-        ]
-        candidate_bos_token_ids += self.tokenizer.all_special_ids  # type: ignore
-
-        dummy_bos_token_id = next(filter(None, candidate_bos_token_ids))
-        if dummy_bos_token_id is None:
-            warnings.warn(
-                "No suitable special token found for BOS token replacement. The first token will be ignored."
-            )
-        else:
-            tokens = torch.cat([torch.tensor([dummy_bos_token_id], device=tokens.device), tokens])
-
-        return tokens.to(self.cfg.device)
+        return ensure_tokenized(prompt, self.tokenizer, self.cfg.device, self.cfg.model_name)
 
     @torch.no_grad()
     def setup_attribution(self, inputs: str | torch.Tensor):
@@ -792,19 +751,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         self,
         interventions: Sequence[Intervention],
     ) -> list[Intervention]:
-        """Convert open-ended interventions into position-0 equivalents.
-
-        An intervention is *open-ended* if its position component is a ``slice`` whose
-        ``stop`` attribute is ``None`` (e.g. ``slice(1, None)``). Such interventions will
-        also apply to tokens generated in an open-ended generation loop. In such cases,
-        when use_past_kv_cache=True, the model only runs the most recent token
-        (and there is thus only 1 position).
-        """
-        converted = []
-        for layer, pos, feature_idx, value in interventions:
-            if isinstance(pos, slice) and pos.stop is None:
-                converted.append((layer, 0, feature_idx, value))
-        return converted
+        return convert_open_ended_interventions(interventions)
 
     @torch.no_grad
     def feature_intervention_generate(

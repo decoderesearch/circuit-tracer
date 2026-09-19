@@ -1,23 +1,13 @@
-"""
-Build an **attribution graph** that captures the *direct*, *linear* effects
-between features and next-token logits for a *prompt-specific*
-**local replacement model**.
+"""Attribution for the interp_engine backend.
 
-High-level algorithm (matches the 2025 ``Attribution Graphs`` paper):
-https://transformer-circuits.pub/2025/attribution-graphs/methods.html
+The algorithm is the one described in ``attribute_transformerlens`` and in the 2025
+``Attribution Graphs`` paper; only the parts that touch the model differ, because here the model
+is an unmodified HF module tree rather than a ``HookedTransformer``:
 
-1. **Local replacement model** - we configure gradients to flow only through
-   linear components of the network, effectively bypassing attention mechanisms,
-   MLP non-linearities, and layer normalization scales.
-2. **Forward pass** - record residual-stream activations and mark every active
-   feature.
-3. **Backward passes** - for each source node (feature or logit), inject a
-   *custom* gradient that selects its encoder/decoder direction.  Because the
-   model is linear in the residual stream under our freezes, this contraction
-   equals the *direct effect* A_{s->t}.
-4. **Assemble graph** - store edge weights in a dense matrix and package a
-   ``Graph`` object.  Downstream utilities can *prune* the graph to the subset
-   needed for interpretation.
+* the forward pass stops before the unembedding by running the trunk directly, instead of via a
+  ``stop_at_layer`` argument;
+* the unembedding matrix and the modules to offload are reached through interp-engine's resolved
+  architecture rather than through ``model.unembed`` / ``model.blocks``.
 """
 
 import logging
@@ -34,15 +24,15 @@ from circuit_tracer.attribution.targets import (
     log_attribution_target_info,
 )
 from circuit_tracer.graph import Graph, compute_partial_influences
-from circuit_tracer.replacement_model.replacement_model_transformerlens import (
-    TransformerLensReplacementModel,
+from circuit_tracer.replacement_model.replacement_model_interp_engine import (
+    InterpEngineReplacementModel,
 )
 from circuit_tracer.utils.disk_offload import offload_modules
 
 
 def attribute(
     prompt: str | torch.Tensor | list[int],
-    model: TransformerLensReplacementModel,
+    model: InterpEngineReplacementModel,
     *,
     attribution_targets: Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None = None,
     max_n_logits: int = 10,
@@ -53,26 +43,25 @@ def attribute(
     verbose: bool = False,
     update_interval: int = 4,
 ) -> Graph:
-    """Compute an attribution graph for *prompt* using TransformerLens backend.
+    """Compute an attribution graph for *prompt* using the interp_engine backend.
 
     Args:
         prompt: Text, token ids, or tensor - will be tokenized if str.
-        model: Frozen ``TransformerLensReplacementModel``
+        model: Frozen ``InterpEngineReplacementModel``
         attribution_targets: Target specification in one of four formats:
                           - None: Auto-select salient logits based on probability threshold
                           - torch.Tensor: Tensor of token indices
                           - Sequence[str]: Token strings (tokenized, auto-computes probability
                             and unembed vector)
-                          - Sequence[TargetSpec]: Fully specified custom targets (CustomTarget or tuple)
-                            with arbitrary unembed directions
+                          - Sequence[TargetSpec]: Fully specified custom targets (CustomTarget or
+                            tuple) with arbitrary unembed directions
         max_n_logits: Max number of logit nodes (used when attribution_targets is None).
         desired_logit_prob: Keep logits until cumulative prob >= this value
                            (used when attribution_targets is None).
         batch_size: How many source nodes to process per backward pass.
         max_feature_nodes: Max number of feature nodes to include in the graph.
         offload: Method for offloading model parameters to save memory.
-                 Options are "cpu" (move to CPU), "disk" (save to disk),
-                 or None (no offloading).
+                 Options are "cpu" (move to CPU), "disk" (save to disk), or None.
         verbose: Whether to show progress information.
         update_interval: Number of batches to process before updating the feature ranking.
 
@@ -117,18 +106,18 @@ def attribute(
 
 
 def _run_attribution(
-    model,
+    model: InterpEngineReplacementModel,
     prompt,
     attribution_targets,
-    max_n_logits,
-    desired_logit_prob,
-    batch_size,
-    max_feature_nodes,
-    offload,
-    verbose,
+    max_n_logits: int,
+    desired_logit_prob: float,
+    batch_size: int,
+    max_feature_nodes: int | None,
+    offload: Literal["cpu", "disk", None],
+    verbose: bool,
     offload_handles,
     logger,
-    update_interval=4,
+    update_interval: int = 4,
 ):
     start_time = time.time()
     # Phase 0: precompute
@@ -142,19 +131,22 @@ def _run_attribution(
     logger.info(f"Precomputation completed in {time.time() - phase_start:.2f}s")
     logger.info(f"Found {ctx.activation_matrix._nnz()} active features")
 
-    if offload:
+    # A skip-connection transcoder is still needed during the forward pass, to compute the skip
+    # term the replacement model routes gradient through, so it can only be offloaded afterwards.
+    if offload and not model.skip_transcoder:
         offload_handles += offload_modules(model.transcoders, offload)
 
     # Phase 1: forward pass
     logger.info("Phase 1: Running forward pass")
     phase_start = time.time()
     with ctx.install_hooks(model):
-        residual = model.forward(input_ids.expand(batch_size, -1), stop_at_layer=model.cfg.n_layers)
-        ctx._resid_activations[-1] = model.ln_final(residual)
+        ctx._resid_activations[-1] = model.forward_trunk(input_ids.expand(batch_size, -1))
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
     if offload:
-        offload_handles += offload_modules([block.mlp for block in model.blocks], offload)
+        offload_handles += offload_modules(model.mlp_modules, offload)
+        if model.skip_transcoder:
+            offload_handles += offload_modules(model.transcoders, offload)
 
     # Phase 2: build input vector list
     logger.info("Phase 2: Building input vectors")
@@ -175,7 +167,12 @@ def _run_attribution(
     log_attribution_target_info(targets, attribution_targets, logger)
 
     if offload:
-        offload_handles += offload_modules([model.unembed, model.embed], offload)
+        offload_handles += offload_modules([model.arch.embed], offload)
+        # Weight tying makes the unembedding the same storage as the embedding, so offloading it
+        # a second time would move a tensor that is already gone. interp-engine resolves the
+        # tying as a structural fact rather than us comparing data pointers.
+        if not model.arch.quirks.tied_embeddings:
+            offload_handles += offload_modules([model.arch.lm_head], offload)
 
     logit_offset = len(feat_layers) + (n_layers + 1) * n_pos
     n_logits = len(targets)
@@ -246,6 +243,7 @@ def _run_attribution(
             pbar.update(len(idx_batch))
 
     pbar.close()
+    ctx.remove_hooks()
     logger.info(f"Feature attributions completed in {time.time() - phase_start:.2f}s")
 
     # Phase 5: packaging graph
