@@ -8,6 +8,17 @@ import transformers
 TRANSFORMERS_VERSION = version.parse(transformers.__version__)
 TRANSFORMERS_GTE_5_0_0 = TRANSFORMERS_VERSION >= version.parse("5.0.0")
 
+# Which `.source` operation on the attention forward is the interface CALL rather than the
+# assignment above it. nnsight >= 0.8 counts assignments on the same per-name counter as calls, so
+# the call sits one index past the last assignment to that name. transformers v4 writes three lines
+# on it (the initial assignment, the implementation lookup, then the call), which is why the call is
+# `_2` there. v5 folds the lookup into `ALL_ATTENTION_FUNCTIONS.get_interface(...)`, a different name
+# and so off this counter, leaving two and making the call `_1`. Every architecture in this table
+# writes the same shape, so one index serves all of them.
+_ATTN_INTERFACE_CALL = (
+    "attention_interface_1" if TRANSFORMERS_GTE_5_0_0 else "attention_interface_2"
+)
+
 
 @dataclass
 class TransformerLens_NNSight_Mapping:
@@ -28,7 +39,7 @@ class TransformerLens_NNSight_Mapping:
 # Create an instance with the original configuration values
 gemma_2_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma2ForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern=f"model.layers[{{layer}}].self_attn.source.{_ATTN_INTERFACE_CALL}.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
         "model.layers[{layer}].post_attention_layernorm.source.self__norm_0.source.torch_rsqrt_0",
@@ -53,7 +64,7 @@ gemma_2_mapping = TransformerLens_NNSight_Mapping(
 # Create an instance with the original configuration values
 gemma_3_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma3ForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern=f"model.layers[{{layer}}].self_attn.source.{_ATTN_INTERFACE_CALL}.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
         "model.layers[{layer}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
@@ -84,7 +95,7 @@ gemma_3_mapping = TransformerLens_NNSight_Mapping(
 _gemma3_cond_prefix = "model.language_model" if TRANSFORMERS_GTE_5_0_0 else "language_model"
 gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma3ForConditionalGeneration",
-    attention_location_pattern=f"{_gemma3_cond_prefix}.layers[{{layer}}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern=f"{_gemma3_cond_prefix}.layers[{{layer}}].self_attn.source.{_ATTN_INTERFACE_CALL}.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         f"{_gemma3_cond_prefix}.layers[{{layer}}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
         f"{_gemma3_cond_prefix}.layers[{{layer}}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
@@ -121,7 +132,7 @@ gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
 # Create an instance with the original configuration values
 llama_3_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="LlamaForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern=f"model.layers[{{layer}}].self_attn.source.{_ATTN_INTERFACE_CALL}.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.mean_0",
         "model.layers[{layer}].post_attention_layernorm.source.mean_0",
@@ -142,7 +153,7 @@ llama_3_mapping = TransformerLens_NNSight_Mapping(
 # Create an instance with the original configuration values
 qwen_3_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Qwen3ForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern=f"model.layers[{{layer}}].self_attn.source.{_ATTN_INTERFACE_CALL}.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.mean_0",
         "model.layers[{layer}].post_attention_layernorm.source.mean_0",
@@ -170,7 +181,7 @@ _gpt_oss_mlp_hook = (
 )
 gpt_oss_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="GptOssForCausalLM",
-    attention_location_pattern="model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern=f"model.layers[{{layer}}].self_attn.source.{_ATTN_INTERFACE_CALL}.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
         "model.layers[{layer}].input_layernorm.source.mean_0",
         "model.layers[{layer}].post_attention_layernorm.source.mean_0",
