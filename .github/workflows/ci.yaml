@@ -1,9 +1,21 @@
 name: "ci"
 on:
   pull_request:
+    # The defaults, plus `ready_for_review` for the large ground-truth sets.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      ground_truth_sets:
+        description: >-
+          Transcoder sets for the ground-truth jobs. "default" is the two gemma-scope sets on 16 GB
+          cards. "all" adds the CLT (160 GiB) on a 48 GB card and Qwen3-4B (57 GiB) on a 96 GB
+          card; those also run when a PR opens ready for review and on merge to main.
+        type: choice
+        default: default
+        options: [default, all]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,3 +34,126 @@ jobs:
         run: python -m pyright
       - name: run tests
         run: python -m pytest tests -m "not requires_disk"
+
+  # tests/test_graph_ground_truth.py on a real GPU: a graph built here, on each backend, against a
+  # reference graph built from the same request. The `build` job has no GPU, so there these tests
+  # skip. One runner per transcoder set, one at a time: the machine.dev account runs one runner at
+  # once, and a job that waits more than 15 minutes for a slot fails.
+  #
+  # Runner: machine.dev (https://machine.dev), a managed GPU runner picked with one `runs-on` label,
+  # CUDA preinstalled, billed per minute. T4 is the 16 GB card; gemma-2-2b peaks at 9.6 GiB on
+  # transformerlens and ~7 GiB on nnsight and interp_engine, gemma-3-1b at ~3 GiB. The 64 GB RAM
+  # tier is not optional: transformerlens builds gemma-2-2b on the CPU before it moves it, and that
+  # load peaks above 27 GB of RSS. Spot, because a job is minutes long and has no state: an
+  # interruption is a re-run, at a quarter of the on-demand price.
+  #
+  # Setup: connect the GitHub org to machine.dev and enable self-hosted runners for this repo, then
+  # set the repository secret HF_TOKEN (the google/gemma checkpoints are gated).
+  #
+  # The weights are not cached: gemma-2-2b plus its transcoders is ~13 GB, over the 10 GB a
+  # repository's Actions cache holds. They download on every run.
+  ground-truth:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case: [gemma-2-2b-gemmascope-16k, gemma-3-1b-gemmascope2-16k]
+    runs-on: machine/gpu=t4/cpu=16/ram=64/tenancy=spot
+    # Managed runners bill per minute. gemma-2-2b took 3 minutes on its first pass.
+    timeout-minutes: 45
+    concurrency:
+      group: ground-truth-${{ matrix.case }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GPU sanity (driver present)
+        run: nvidia-smi || { echo "::error::No GPU visible on this runner"; exit 1; }
+
+      - name: Check HF_TOKEN
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set; the google/gemma checkpoints are gated"
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+
+      # One pytest process per backend: a failed test's traceback keeps its tensors alive, and the
+      # next backend would start on a full card. `-rP` puts each passing test's captured stdout in
+      # the summary; the test prints its peak GPU memory there, so the card can be sized from
+      # evidence.
+      - name: Run ground-truth tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          status=0
+          for backend in transformerlens nnsight interp_engine; do
+            .venv/bin/python -m pytest tests/test_graph_ground_truth.py -k "${{ matrix.case }} and $backend" -v -rP --durations=0 || status=1
+          done
+          exit $status
+
+  # The `requires_disk` sets. Each downloads its transcoders first, which is most of the time:
+  # 160 GiB for the CLT, 57 GiB for Qwen3-4B. So they run when a PR opens ready for review (or a
+  # draft is marked ready), on merge to main, and on `workflow_dispatch` with ground_truth_sets=all,
+  # not on every push to a PR. They wait for `ground-truth`, and for each other, for the one-runner
+  # cap above; the CLT job is 15 minutes, longer than a queued job survives.
+  ground-truth-opt-in:
+    needs: ground-truth
+    if: >-
+      github.event_name == 'push'
+      || (contains(fromJSON('["opened", "ready_for_review"]'), github.event.action)
+          && !github.event.pull_request.draft)
+      || (github.event_name == 'workflow_dispatch' && inputs.ground_truth_sets == 'all')
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          # The CLT fits a 48 GB L40S. Qwen3-4B does not on nnsight, so it gets the 96 GB card.
+          - case: gemma-2-2b-clt-2.5M
+            runs_on: machine/gpu=l40s/cpu=16/ram=128/disk_size=250/tenancy=spot
+            minutes: 180
+          - case: qwen3-4b-transcoders
+            runs_on: machine/gpu=rtx6000/cpu=16/ram=128/disk_size=150/tenancy=spot
+            minutes: 90
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: ${{ matrix.minutes }}
+    concurrency:
+      group: ground-truth-${{ matrix.case }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GPU sanity (driver present)
+        run: nvidia-smi || { echo "::error::No GPU visible on this runner"; exit 1; }
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+
+      - name: Run ground-truth tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          status=0
+          for backend in transformerlens nnsight interp_engine; do
+            .venv/bin/python -m pytest tests/test_graph_ground_truth.py -m requires_disk -k "${{ matrix.case }} and $backend" -v -rP --durations=0 || status=1
+          done
+          exit $status
