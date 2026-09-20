@@ -270,7 +270,7 @@ def load_dummy_gemma_model(cfg: AutoConfig) -> NNSightReplacementModel:
     for _, param in model.named_parameters():
         nn.init.uniform_(param, a=-1, b=1)
 
-    for transcoder in model.transcoders[0]:  # type: ignore
+    for transcoder in model.transcoders._module:  # type: ignore
         nn.init.uniform_(transcoder.activation_function.threshold, a=0, b=1)
 
     model.tokenizer.pad_token = model.tokenizer.eos_token  # type:ignore

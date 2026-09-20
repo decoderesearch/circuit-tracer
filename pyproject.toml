@@ -9,7 +9,8 @@ dependencies = [
     "huggingface_hub>=0.25.0",
     "ipykernel>=6.29.5,<7.0.0",
     "ipywidgets>=8.1.7",
-    "nnsight==0.6.1",
+    # 0.8 is a pre-release on PyPI, so the lower bound names it explicitly
+    "nnsight>=0.8.0rc1,<0.9",
     "numpy>=1.24.0",
     "packaging>=20.0",
     "pydantic>=2.0.0",
