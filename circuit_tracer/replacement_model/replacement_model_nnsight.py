@@ -140,31 +140,6 @@ class NNSightReplacementModel(TransformersModel):
         if hasattr(config, "quantization_config"):
             config.quantization_config["dequantize"] = True
 
-        # nnsight >= 0.7 refuses multimodal-registered repos (e.g. gemma-3-4b-it is
-        # AutoModelForImageTextToText) under the default automodel and directs callers to
-        # VisionLanguageModel, which is unusable here (this class subclasses LanguageModel).
-        # Resolving the concrete class AutoModelForCausalLM would pick keeps the exact module
-        # tree the transcoder mappings were validated against, on both nnsight 0.6 and 0.7.
-        automodel_kwargs = {}
-        try:
-            from transformers.models.auto.modeling_auto import (
-                MODEL_FOR_CAUSAL_LM_MAPPING_NAMES,
-                MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES,
-            )
-
-            model_type = getattr(config, "model_type", None)
-            if (
-                model_type in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES
-                and model_type in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-            ):
-                import transformers
-
-                automodel_kwargs["automodel"] = getattr(
-                    transformers, MODEL_FOR_CAUSAL_LM_MAPPING_NAMES[model_type]
-                )
-        except ImportError:
-            pass
-
         super(cls, model).__init__(
             model_name,
             task="text-generation",
@@ -173,7 +148,6 @@ class NNSightReplacementModel(TransformersModel):
             dispatch=True,
             dtype=dtype,
             attn_implementation="eager",
-            **automodel_kwargs,
         )
 
         model._configure_replacement_model(transcoders)
