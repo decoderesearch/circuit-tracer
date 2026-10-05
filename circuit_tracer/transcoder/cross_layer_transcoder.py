@@ -240,6 +240,13 @@ class CrossLayerTranscoder(torch.nn.Module):
         n_layers = features.shape[0]
         device = features.device
 
+        if activations.numel() == 0:
+            empty_indices = layer_idx.new_empty(0)
+            empty_vectors = activations.new_empty(
+                (0, self.d_model), dtype=torch.promote_types(activations.dtype, self.dtype)
+            )
+            return empty_indices, empty_indices, empty_indices, empty_vectors, empty_indices
+
         pos_ids = []
         layer_ids = []
         feat_ids = []
@@ -282,9 +289,26 @@ class CrossLayerTranscoder(torch.nn.Module):
         return pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_mapping
 
     def compute_reconstruction(
-        self, pos_ids, layer_ids, decoder_vectors, input_acts: torch.Tensor | None = None
+        self,
+        pos_ids,
+        layer_ids,
+        decoder_vectors,
+        input_acts: torch.Tensor | None = None,
+        *,
+        n_pos: int | None = None,
     ):
-        n_pos = pos_ids.max() + 1
+        """Reconstruct all positions, including those with no active features.
+
+        Pass n_pos or input_acts to preserve trailing inactive positions. Without
+        either, nonempty decoder selections retain the inferred-length behavior.
+        """
+        if n_pos is None:
+            if input_acts is not None:
+                n_pos = input_acts.shape[1]
+            elif pos_ids.numel():
+                n_pos = int(pos_ids.max().item()) + 1
+            else:
+                raise ValueError("Empty decoder selections require n_pos or input_acts")
         flat_idx = layer_ids * n_pos + pos_ids
         recon = torch.zeros(
             n_pos * self.n_layers,
@@ -302,7 +326,9 @@ class CrossLayerTranscoder(torch.nn.Module):
 
     def decode(self, features, input_acts: torch.Tensor | None = None):
         pos_ids, layer_ids, feat_ids, decoder_vectors, _ = self.select_decoder_vectors(features)
-        return self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors, input_acts)
+        return self.compute_reconstruction(
+            pos_ids, layer_ids, decoder_vectors, input_acts, n_pos=features.shape[1]
+        )
 
     def compute_skip(self, layer_id: int, inputs):
         if self.W_skip is not None:
@@ -338,7 +364,9 @@ class CrossLayerTranscoder(torch.nn.Module):
         pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_to_decoder_map = (
             self.select_decoder_vectors(features)
         )
-        reconstruction = self.compute_reconstruction(pos_ids, layer_ids, decoder_vectors, inputs)
+        reconstruction = self.compute_reconstruction(
+            pos_ids, layer_ids, decoder_vectors, inputs, n_pos=inputs.shape[1]
+        )
 
         return {
             "activation_matrix": features,
