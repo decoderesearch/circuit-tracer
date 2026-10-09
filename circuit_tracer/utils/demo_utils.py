@@ -13,25 +13,9 @@ from circuit_tracer.graph import compute_node_influence
 Feature = namedtuple("Feature", ["layer", "pos", "feature_idx"])
 
 
-def get_unembed_vecs(model, token_ids: list[int], backend: str) -> list[torch.Tensor]:
-    """Extract unembedding column vectors for the given token IDs.
-
-    Handles the orientation difference between TransformerLens (d_model, d_vocab)
-    and NNSight (d_vocab, d_model) unembedding matrices.
-
-    Args:
-        model: A ``ReplacementModel`` instance.
-        token_ids: Vocabulary indices whose unembed columns to extract.
-        backend: ``"transformerlens"`` or ``"nnsight"``.
-
-    Returns:
-        List of 1-D tensors, one per token ID, each of shape ``(d_model,)``.
-    """
-    unembed = model.unembed.W_U if backend == "transformerlens" else model.unembed_weight
-    d_vocab = model.tokenizer.vocab_size
-    if unembed.shape[0] == d_vocab:
-        return [unembed[tid] for tid in token_ids]
-    return [unembed[:, tid] for tid in token_ids]
+def get_unembed_vecs(model, token_ids: list[int]) -> list[torch.Tensor]:
+    """Return the ``(d_model,)`` unembedding row of each token ID."""
+    return [model.unembed_weight[tid] for tid in token_ids]
 
 
 def cleanup_cuda() -> None:

@@ -34,7 +34,7 @@ class AttributionContext:
             `(n_layers, n_pos, d_model)` - *residual* the CLT / PLT failed to
             reconstruct ("error nodes").
         token_vectors (torch.Tensor):
-            `(n_pos, d_model)` - embeddings of the prompt tokens.
+            `(n_pos, d_model)` - the token embeddings as they enter the residual stream.
         decoder_vectors (torch.Tensor):
             `(total_active_features, d_model)` - decoder rows **only for active
             features**, already multiplied by feature activations so they
@@ -82,7 +82,7 @@ class AttributionContext:
             self._resid_activations.append(model.pre_logit_location.output.last_hidden_state)  # type: ignore
 
         with tracer.invoke():
-            self._feature_output_activations.append(model.embed_location.output)  # type: ignore
+            self._feature_output_activations.append(model.resid_pre_location.input)  # type: ignore
             for feature_output_loc_ in model.feature_output_locs:
                 if barrier:
                     barrier()

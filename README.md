@@ -61,6 +61,10 @@ By default, `circuit-tracer` creates a `ReplacementModel` that inherits from the
 
 Creating a `ReplacementModel` with `backend='nnsight'` will create an `nnsight`-backed `ReplacementModel` that inherits from its `TransformersModel` class; this supports most HuggingFace models. That is, you can create an `nnsight` `ReplacementModel` using `ReplacementModel.from_pretrained(model_name, backend='nnsight')`. Note, however, that the `nnsight` backend is still experimental: it is slower and less memory-efficient, and may not provide all of the functionality of the `TransformerLens` version.
 
+Creating a `ReplacementModel` with `backend='interp_engine'` uses [`interp-engine`](https://github.com/decoderesearch/interp-engine), which hooks a HuggingFace `AutoModelForCausalLM` in place rather than converting it to another weight convention.
+
+Note that no backend can be built on an inference server such as vLLM. Attribution requires a backward pass through the model, and vLLM runs its forward pass under `torch.inference_mode()`, which records no autograd graph at all.
+
 ### Caching
 In order to use the `lazy_decoder` and `lazy_encoder` options on transcoders, they must be stored in `circuit-tracer`-compatible format. While many transcoders have been uploaded in that format to HuggingFace, this requires large amounts of storage. `circuit-tracer` now supports instead creating a local cache of models, by calling e.g.
 

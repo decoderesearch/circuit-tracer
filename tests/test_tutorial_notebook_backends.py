@@ -863,7 +863,7 @@ def test_setup_attribution_consistency(models, dallas_austin_prompt):
     )
 
 
-def _build_demo_custom_target(model, prompt, token_x, token_y, backend):
+def _build_demo_custom_target(model, prompt, token_x, token_y):
     """Build a CustomTarget for logit(token_x) − logit(token_y).
 
     Backend-agnostic helper matching the attribution_targets_demo pattern.
@@ -878,7 +878,7 @@ def _build_demo_custom_target(model, prompt, token_x, token_y, backend):
         logits, _ = model.get_activations(input_ids)
     last_logits = logits.squeeze(0)[-1]
 
-    vec_x, vec_y = get_unembed_vecs(model, [idx_x, idx_y], backend)
+    vec_x, vec_y = get_unembed_vecs(model, [idx_x, idx_y])
     diff_vec = vec_x - vec_y
     probs = torch.softmax(last_logits, dim=-1)
     diff_prob = max((probs[idx_x] - probs[idx_y]).abs().item(), 1e-6)
@@ -890,7 +890,7 @@ def _build_demo_custom_target(model, prompt, token_x, token_y, backend):
     )
 
 
-def _build_demo_semantic_target(model, prompt, group_a_tokens, group_b_tokens, label, backend):
+def _build_demo_semantic_target(model, prompt, group_a_tokens, group_b_tokens, label):
     """Build a CustomTarget for an abstract concept direction via vector rejection.
 
     For each (capital, state) pair, project the capital vector onto the state
@@ -905,8 +905,8 @@ def _build_demo_semantic_target(model, prompt, group_a_tokens, group_b_tokens, l
     ids_a = [tokenizer.encode(t, add_special_tokens=False)[-1] for t in group_a_tokens]
     ids_b = [tokenizer.encode(t, add_special_tokens=False)[-1] for t in group_b_tokens]
 
-    vecs_a = get_unembed_vecs(model, ids_a, backend)
-    vecs_b = get_unembed_vecs(model, ids_b, backend)
+    vecs_a = get_unembed_vecs(model, ids_a)
+    vecs_b = get_unembed_vecs(model, ids_b)
 
     # Vector rejection: for each pair, remove the state-direction component
     residuals = []
@@ -1035,7 +1035,7 @@ def test_attribution_targets_logit_diff(models_cpu, dallas_austin_prompt):
     # --- NNSight backend ---
     with clean_cuda(model_nnsight):
         custom_nnsight, _, _ = _build_demo_custom_target(
-            model_nnsight, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="nnsight"
+            model_nnsight, dallas_austin_prompt, "▁Austin", "▁Dallas"
         )
         graph_nnsight = attribute_nnsight(
             dallas_austin_prompt,
@@ -1052,7 +1052,7 @@ def test_attribution_targets_logit_diff(models_cpu, dallas_austin_prompt):
     # --- TL backend ---
     with clean_cuda(model_tl):
         custom_tl, _, _ = _build_demo_custom_target(
-            model_tl, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="transformerlens"
+            model_tl, dallas_austin_prompt, "▁Austin", "▁Dallas"
         )
         graph_tl = attribute_transformerlens(
             dallas_austin_prompt,
@@ -1099,7 +1099,7 @@ def test_attribution_targets_logit_diff_intervention(models_cpu, dallas_austin_p
     # --- NNSight backend ---
     with clean_cuda(model_nnsight):
         custom_nnsight, idx_x_nn, idx_y_nn = _build_demo_custom_target(
-            model_nnsight, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="nnsight"
+            model_nnsight, dallas_austin_prompt, "▁Austin", "▁Dallas"
         )
         graph_nnsight = attribute_nnsight(
             dallas_austin_prompt,
@@ -1130,7 +1130,7 @@ def test_attribution_targets_logit_diff_intervention(models_cpu, dallas_austin_p
     # --- TL backend ---
     with clean_cuda(model_tl):
         custom_tl, idx_x_tl, idx_y_tl = _build_demo_custom_target(
-            model_tl, dallas_austin_prompt, "▁Austin", "▁Dallas", backend="transformerlens"
+            model_tl, dallas_austin_prompt, "▁Austin", "▁Dallas"
         )
         graph_tl = attribute_transformerlens(
             dallas_austin_prompt,
@@ -1182,7 +1182,7 @@ def test_attribution_targets_semantic(models_cpu, dallas_austin_prompt):
     # --- NNSight backend ---
     with clean_cuda(model_nnsight):
         sem_nnsight = _build_demo_semantic_target(
-            model_nnsight, dallas_austin_prompt, capitals, states, label, backend="nnsight"
+            model_nnsight, dallas_austin_prompt, capitals, states, label
         )
         graph_nnsight = attribute_nnsight(
             dallas_austin_prompt,
@@ -1199,7 +1199,7 @@ def test_attribution_targets_semantic(models_cpu, dallas_austin_prompt):
     # --- TL backend ---
     with clean_cuda(model_tl):
         sem_tl = _build_demo_semantic_target(
-            model_tl, dallas_austin_prompt, capitals, states, label, backend="transformerlens"
+            model_tl, dallas_austin_prompt, capitals, states, label
         )
         graph_tl = attribute_transformerlens(
             dallas_austin_prompt,
@@ -1251,7 +1251,7 @@ def test_attribution_targets_semantic_intervention(models_cpu, dallas_austin_pro
     # --- NNSight backend ---
     with clean_cuda(model_nnsight):
         sem_nnsight = _build_demo_semantic_target(
-            model_nnsight, dallas_austin_prompt, capitals, states, label, backend="nnsight"
+            model_nnsight, dallas_austin_prompt, capitals, states, label
         )
         idx_x_nn = model_nnsight.tokenizer.encode("▁Austin", add_special_tokens=False)[-1]
         idx_y_nn = model_nnsight.tokenizer.encode("▁Dallas", add_special_tokens=False)[-1]
@@ -1285,7 +1285,7 @@ def test_attribution_targets_semantic_intervention(models_cpu, dallas_austin_pro
     # --- TL backend ---
     with clean_cuda(model_tl):
         sem_tl = _build_demo_semantic_target(
-            model_tl, dallas_austin_prompt, capitals, states, label, backend="transformerlens"
+            model_tl, dallas_austin_prompt, capitals, states, label
         )
         idx_x_tl = model_tl.tokenizer.encode("▁Austin", add_special_tokens=False)[-1]
         idx_y_tl = model_tl.tokenizer.encode("▁Dallas", add_special_tokens=False)[-1]

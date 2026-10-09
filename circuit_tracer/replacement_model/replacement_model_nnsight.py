@@ -1,4 +1,3 @@
-import warnings
 from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -6,30 +5,25 @@ from functools import partial
 from typing import Callable, Iterator, Literal, cast
 
 import torch
+from nnsight import CONFIG as NNSIGHT_CONFIG
+from nnsight import Envoy, TransformersModel, save
+from nnsight.intervention.barrier import Barrier
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from nnsight.intervention.barrier import Barrier
-from nnsight import TransformersModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
+from circuit_tracer.utils.interventions import Intervention, convert_open_ended_interventions
 from circuit_tracer.utils.tl_nnsight_mapping import (
-    get_mapping,
     convert_nnsight_config_to_transformerlens,
+    get_mapping,
 )
+from circuit_tracer.utils.tokenization import ensure_tokenized
 
 NNSIGHT_CONFIG.APP.PYMOUNT = False
-
-# Type definition for an intervention tuple (layer, position, feature_idx, value)
-Intervention = tuple[
-    int | torch.Tensor,
-    int | slice | torch.Tensor,
-    int | torch.Tensor,
-    int | float | torch.Tensor,
-]
 
 
 class EnvoyWrapper:
@@ -56,6 +50,8 @@ class NNSightReplacementModel(TransformersModel):
     pre_logit_location: nn.Module  # type: ignore
     embed_loc: nn.Module
     unembed_loc: nn.Module
+    embed_weight: torch.Tensor
+    unembed_weight: torch.Tensor
     skip_transcoder: bool
     scan_name: str | list[str] | None
     backend: Literal["nnsight"]
@@ -264,7 +260,7 @@ class NNSightReplacementModel(TransformersModel):
 
     def configure_gradient_flow(self, tracer):
         with tracer.invoke():
-            self.embed_location.output.requires_grad = True  # type: ignore
+            self.resid_pre_location.input.requires_grad = True  # type: ignore
 
         with tracer.invoke():
             for freeze_loc in self.attention_locs:
@@ -431,56 +427,7 @@ class NNSightReplacementModel(TransformersModel):
             ValueError: If tensor has wrong shape (must be 1-D or 2-D with batch size 1)
         """
 
-        if isinstance(prompt, str):
-            tokens = self.tokenizer(
-                prompt, return_tensors="pt", add_special_tokens=False
-            ).input_ids.squeeze(0)
-        elif isinstance(prompt, torch.Tensor):
-            tokens = prompt.squeeze()
-        elif isinstance(prompt, list):
-            tokens = torch.tensor(prompt, dtype=torch.long).squeeze()
-        else:
-            raise TypeError(f"Unsupported prompt type: {type(prompt)}")
-
-        if tokens.ndim > 1:
-            raise ValueError(f"Tensor must be 1-D, got shape {tokens.shape}")
-
-        tokens = tokens.to(self.device)
-
-        gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
-        if gemma_3_it:
-            ignore_prefix = torch.tensor(
-                [2, 105, 2364, 107], dtype=tokens.dtype, device=tokens.device
-            )
-            tokenization_error = (
-                "Input tokens should start with <bos><start_of_turn>user\n, but got {tokens}"
-            )
-            assert tokens.size(0) >= 4 and torch.all(tokens[:4] == ignore_prefix), (
-                tokenization_error.format(tokens=self.tokenizer.decode(tokens.cpu().tolist()))
-            )
-            return tokens
-
-        # Check if a special token is already present at the beginning
-        if tokens[0] in self.tokenizer.all_special_ids:
-            return tokens
-
-        # Prepend a special token to avoid artifacts at position 0
-        candidate_bos_token_ids = [
-            self.tokenizer.bos_token_id,
-            self.tokenizer.pad_token_id,
-            self.tokenizer.eos_token_id,
-        ]
-        candidate_bos_token_ids += self.tokenizer.all_special_ids
-
-        dummy_bos_token_id = next(filter(None, candidate_bos_token_ids))
-        if dummy_bos_token_id is None:
-            warnings.warn(
-                "No suitable special token found for BOS token replacement. The first token will be ignored."
-            )
-        else:
-            tokens = torch.cat([torch.tensor([dummy_bos_token_id], device=tokens.device), tokens])
-
-        return tokens.to(self.device)
+        return ensure_tokenized(prompt, self.tokenizer, self.device, self.cfg.model_name)
 
     @torch.no_grad()
     def setup_attribution(self, inputs: str | torch.Tensor):
@@ -506,6 +453,7 @@ class NNSightReplacementModel(TransformersModel):
         transcoders = self.transcoders
 
         with self.trace(tokens):
+            resid_pre = save(self.resid_pre_location.input)  # type: ignore
             mlp_in_cache, mlp_out_cache = [], []
             for feature_input_loc, feature_output_loc in zip(
                 self.feature_input_locs, self.feature_output_locs
@@ -530,9 +478,8 @@ class NNSightReplacementModel(TransformersModel):
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
         error_vectors[:, self.zero_positions] = 0
-        token_vectors = self.embed_weight[  # type: ignore
-            tokens
-        ].detach()  # (n_pos, d_model)  # type: ignore
+        # The residual entering layer 0, where the token gradient is read; same as TL's W_E rows.
+        token_vectors = resid_pre.reshape(-1, resid_pre.shape[-1]).detach()  # type: ignore
 
         return AttributionContext(
             activation_matrix=attribution_data["activation_matrix"],
@@ -830,19 +777,7 @@ class NNSightReplacementModel(TransformersModel):
         self,
         interventions: Sequence[Intervention],
     ) -> Sequence[Intervention]:
-        """Convert open-ended interventions into position-0 equivalents.
-
-        An intervention is *open-ended* if its position component is a ``slice`` whose
-        ``stop`` attribute is ``None`` (e.g. ``slice(1, None)``). Such interventions will
-        also apply to tokens generated in an open-ended generation loop. In such cases,
-        when use_past_kv_cache=True, the model only runs the most recent token
-        (and there is thus only 1 position).
-        """
-        converted = []
-        for layer, pos, feature_idx, value in interventions:
-            if isinstance(pos, slice) and pos.stop is None:
-                converted.append((layer, 0, feature_idx, value))
-        return converted
+        return convert_open_ended_interventions(interventions)
 
     @torch.no_grad
     def feature_intervention_generate(
@@ -1047,3 +982,8 @@ class NNSightReplacementModel(TransformersModel):
     def embed_location(self) -> nn.Module:
         """Dynamically resolve the embed hook location."""
         return self._resolve_attr(self, self._embed_location)  # type: ignore
+
+    @property
+    def resid_pre_location(self) -> nn.Module:
+        """The first decoder layer; its input is the residual that token attributions read."""
+        return getattr(self.pre_logit_location, "layers")[0]
