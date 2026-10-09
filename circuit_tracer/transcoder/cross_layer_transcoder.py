@@ -353,7 +353,8 @@ class CrossLayerTranscoder(torch.nn.Module):
         """Save CLT to safetensors format compatible with lazy loading.
 
         Saves the CLT state dict split across multiple safetensors files:
-        - W_enc_{i}.safetensors: Contains W_enc_{i}, b_enc_{i}, b_dec_{i}, and optionally threshold_{i}
+        - W_enc_{i}.safetensors: Contains W_enc_{i}, b_enc_{i}, b_dec_{i}, and optionally
+          threshold_{i} and W_skip_{i}
         - W_dec_{i}.safetensors: Contains W_dec_{i}
 
         Args:
@@ -370,6 +371,9 @@ class CrossLayerTranscoder(torch.nn.Module):
                 f"b_enc_{i}": self.b_enc[i].cpu(),
                 f"b_dec_{i}": self.b_dec[i].cpu(),
             }
+
+            if self.W_skip is not None:
+                enc_dict[f"W_skip_{i}"] = self.W_skip[i].cpu()
 
             if has_threshold:
                 assert isinstance(self.activation_function, JumpReLU)
@@ -563,12 +567,16 @@ def _load_state_dict(
     with safe_open(os.path.join(clt_path, dec_file), framework="pt", device=str(device)) as f:
         d_transcoder, d_model = f.get_slice("W_enc_0").get_shape()
         has_threshold = "threshold_0" in f.keys()
+        has_skip = "W_skip_0" in f.keys()
 
     # Preallocate tensors
     b_dec = torch.zeros(n_layers, d_model, device=device, dtype=dtype)
     b_enc = torch.zeros(n_layers, d_transcoder, device=device, dtype=dtype)
 
     state_dict = {"b_dec": b_dec, "b_enc": b_enc}
+
+    if has_skip:
+        state_dict["W_skip"] = torch.zeros(n_layers, d_model, d_model, device=device, dtype=dtype)
 
     if has_threshold:
         state_dict["activation_function.threshold"] = torch.zeros(
@@ -585,6 +593,14 @@ def _load_state_dict(
     for i in range(n_layers):
         enc_file = f"W_enc_{i}.safetensors"
         with safe_open(os.path.join(clt_path, enc_file), framework="pt", device=str(device)) as f:
+            if (f"W_skip_{i}" in f.keys()) != has_skip:
+                raise ValueError(
+                    f"Inconsistent skip weights in {enc_file}: all layers must include "
+                    "W_skip weights or none may include them"
+                )
+            if has_skip:
+                state_dict["W_skip"][i] = f.get_tensor(f"W_skip_{i}").to(dtype)
+
             b_dec[i] = f.get_tensor(f"b_dec_{i}").to(dtype)
             b_enc[i] = f.get_tensor(f"b_enc_{i}").to(dtype)
 
