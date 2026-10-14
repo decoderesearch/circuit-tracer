@@ -158,28 +158,19 @@ def build_model(graph: Graph, used_nodes, used_edges, slug, scan_name, node_thre
     return full_model
 
 
-def create_graph_files(
-    graph_or_path: Graph | str,
+def build_graph_model(
+    graph: Graph,
     slug: str,
-    output_path,
     scan_name=None,
     node_threshold=0.8,
     edge_threshold=0.98,
-):
-    # Import Graph/prune_graph locally to avoid circular import at module import time
-    from circuit_tracer.graph import Graph, prune_graph
+) -> Model:
+    """Prune ``graph`` and build the wire model the frontend reads, without writing it anywhere.
 
-    total_start_time = time.time()
-
-    if isinstance(graph_or_path, Graph):
-        graph = graph_or_path
-    else:
-        graph = load_graph_data(graph_or_path)
-
-    if os.path.exists(output_path):
-        assert os.path.isdir(output_path)
-    else:
-        os.makedirs(output_path, exist_ok=True)
+    The graph is pruned on the GPU when there is one, and comes back on the CPU.
+    """
+    # Import prune_graph locally to avoid circular import at module import time
+    from circuit_tracer.graph import prune_graph
 
     if scan_name is None:
         if graph.scan_name is None:
@@ -199,7 +190,33 @@ def create_graph_files(
     tokenizer = AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)
     nodes = create_nodes(graph, node_mask, tokenizer, cumulative_scores)
     used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask)
-    model = build_model(graph, used_nodes, used_edges, slug, scan_name, node_threshold, tokenizer)
+    return build_model(graph, used_nodes, used_edges, slug, scan_name, node_threshold, tokenizer)
+
+
+def create_graph_files(
+    graph_or_path: Graph | str,
+    slug: str,
+    output_path,
+    scan_name=None,
+    node_threshold=0.8,
+    edge_threshold=0.98,
+):
+    # Import Graph locally to avoid circular import at module import time
+    from circuit_tracer.graph import Graph
+
+    total_start_time = time.time()
+
+    if isinstance(graph_or_path, Graph):
+        graph = graph_or_path
+    else:
+        graph = load_graph_data(graph_or_path)
+
+    if os.path.exists(output_path):
+        assert os.path.isdir(output_path)
+    else:
+        os.makedirs(output_path, exist_ok=True)
+
+    model = build_graph_model(graph, slug, scan_name, node_threshold, edge_threshold)
 
     # Write the output locally
     with open(os.path.join(output_path, f"{slug}.json"), "w") as f:

@@ -11,6 +11,9 @@ from circuit_tracer.graph import Graph
 
 if TYPE_CHECKING:
     from circuit_tracer.attribution.targets import TargetSpec
+    from circuit_tracer.replacement_model.replacement_model_interp_engine import (
+        InterpEngineReplacementModel,
+    )
     from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
     from circuit_tracer.replacement_model.replacement_model_transformerlens import (
         TransformerLensReplacementModel,
@@ -19,7 +22,7 @@ if TYPE_CHECKING:
 
 def attribute(
     prompt: str | torch.Tensor | list[int],
-    model: "NNSightReplacementModel | TransformerLensReplacementModel",
+    model: "NNSightReplacementModel | TransformerLensReplacementModel | InterpEngineReplacementModel",
     *,
     attribution_targets: "Sequence[str] | Sequence[TargetSpec] | torch.Tensor | None" = None,
     max_n_logits: int = 10,
@@ -60,7 +63,22 @@ def attribute(
         Graph: Fully dense adjacency (unpruned).
     """
 
-    if model.backend == "nnsight":
+    if model.backend == "interp_engine":
+        from .attribute_interp_engine import attribute as attribute_interp_engine
+
+        return attribute_interp_engine(
+            prompt=prompt,
+            model=model,  # type: ignore[arg-type]
+            attribution_targets=attribution_targets,
+            max_n_logits=max_n_logits,
+            desired_logit_prob=desired_logit_prob,
+            batch_size=batch_size,
+            max_feature_nodes=max_feature_nodes,
+            offload=offload,
+            verbose=verbose,
+            update_interval=update_interval,
+        )
+    elif model.backend == "nnsight":
         from .attribute_nnsight import attribute as attribute_nnsight
 
         return attribute_nnsight(

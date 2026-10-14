@@ -92,7 +92,7 @@ def main():
     attr_parser.add_argument(
         "--backend",
         type=str,
-        choices=["transformerlens", "nnsight"],
+        choices=["transformerlens", "nnsight", "interp_engine"],
         default="transformerlens",
         help="Backend to use for the replacement model (default: transformerlens).",
     )

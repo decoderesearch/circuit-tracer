@@ -195,7 +195,7 @@ def verify_token_and_error_edges(
 
             with tracer.invoke():
                 if "embed" == target_layer:
-                    intervention(model.embed_location)
+                    intervention(model.resid_pre_location)
 
                 for layer, feature_output_loc in enumerate(model.feature_output_locs):
                     direct_effects_barrier()
@@ -253,10 +253,10 @@ def verify_token_and_error_edges(
         ]
 
         def token_intervention(token_loc, token_pos):
-            activations = token_loc.output
+            activations = token_loc.input
             steering_vector = torch.zeros_like(activations)
             steering_vector[:, token_pos] += token_vectors[token_pos]
-            token_loc.output = activations + steering_vector
+            token_loc.input = activations + steering_vector
 
         intervention = partial(token_intervention, token_pos=token_pos)  # type: ignore
         verify_intervention(expected_effects, intervention, "embed")

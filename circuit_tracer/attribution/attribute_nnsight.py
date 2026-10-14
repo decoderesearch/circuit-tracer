@@ -23,7 +23,7 @@ https://transformer-circuits.pub/2025/attribution-graphs/methods.html
 import logging
 import time
 from collections.abc import Sequence
-from typing import Literal, cast
+from typing import Literal
 
 import torch
 from tqdm import tqdm
@@ -172,11 +172,10 @@ def _run_attribution(
     n_layers, n_pos, _ = activation_matrix.shape
     total_active_feats = activation_matrix._nnz()
 
-    # Create AttributionTargets using NNSight's unembed_weight accessor
     targets = AttributionTargets(
         attribution_targets=attribution_targets,
         logits=ctx.logits[0, -1],
-        unembed_proj=cast(torch.Tensor, model.unembed_weight),  # NNSight uses unembed_weight
+        unembed_proj=model.unembed_weight,
         tokenizer=model.tokenizer,
         max_n_logits=max_n_logits,
         desired_logit_prob=desired_logit_prob,
@@ -187,8 +186,8 @@ def _run_attribution(
     if offload:
         offload_handles += offload_modules([model.embed_location], offload)
         tied_embeds = (
-            model.embed_weight.untyped_storage().data_ptr()  # type:ignore
-            == model.unembed_weight.untyped_storage().data_ptr()  # type:ignore
+            model.embed_weight.untyped_storage().data_ptr()
+            == model.unembed_weight.untyped_storage().data_ptr()
         )
         if not tied_embeds:
             offload_handles += offload_modules([model.lm_head], offload)

@@ -114,8 +114,11 @@ class SingleLayerTranscoder(nn.Module):
 
         if isinstance(to_read, torch.Tensor):
             to_read = to_read.cpu()
-        with safe_open(self.transcoder_path, framework="pt", device=str(self.device)) as f:
-            return f.get_slice("W_dec")[to_read].to(self.dtype)
+        # safetensors indexes a slice with a tensor only when it reads to cpu or cuda; on mps it
+        # raises "Unsupported slice index". Read the selected rows on cpu there and move them.
+        read_on = "cpu" if self.device.type == "mps" else str(self.device)
+        with safe_open(self.transcoder_path, framework="pt", device=read_on) as f:
+            return f.get_slice("W_dec")[to_read].to(self.device, self.dtype)
 
     def encode(self, input_acts, apply_activation_function: bool = True):
         W_enc = self.W_enc
