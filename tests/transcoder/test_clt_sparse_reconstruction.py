@@ -1,5 +1,7 @@
 """Sparse CLT reconstruction must retain tokens with no active features."""
 
+import warnings
+
 import pytest
 import torch
 from safetensors.torch import save_file
@@ -86,7 +88,16 @@ def test_sparse_token_extent(tmp_path, lazy_encoder, lazy_decoder, skip, values,
     inputs = torch.tensor(values)[None, :, None].repeat(2, 1, 2)
     features, expected = dense_oracle(clt, weights, inputs, zero_positions)
     kwargs = {} if zero_positions == slice(0, 1) else {"zero_positions": zero_positions}
-    components = clt.compute_attribution_components(inputs, **kwargs)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        components = clt.compute_attribution_components(inputs, **kwargs)
+    if not features.any():
+        assert len(caught) == 1
+        assert caught[0].category is UserWarning
+        assert "No active features remain after masking" in str(caught[0].message)
+        assert caught[0].filename == __file__
+    else:
+        assert not caught
     actual = components["reconstruction"]
     assert actual.shape == inputs.shape
     torch.testing.assert_close(actual, expected)

@@ -361,6 +361,12 @@ class CrossLayerTranscoder(torch.nn.Module):
                 - encoder_to_decoder_map: Mapping from encoder to decoder indices
         """
         features, encoder_vectors = self.encode_sparse(inputs, zero_positions=zero_positions)
+        if features._nnz() == 0:
+            warnings.warn(
+                "No active features remain after masking positions for attribution. "
+                "Check the input and zero_positions; no feature attributions can be computed.",
+                stacklevel=2,
+            )
         pos_ids, layer_ids, feat_ids, decoder_vectors, encoder_to_decoder_map = (
             self.select_decoder_vectors(features)
         )
