@@ -387,7 +387,9 @@ def load_large_gpt_oss_model_with_dummy_clt():
     gpt_oss_large_cfg.num_attention_heads = 16
     gpt_oss_large_cfg.num_key_value_heads = 16
     gpt_oss_large_cfg.pad_token_id = 127
-    gpt_oss_large_cfg.torch_dtype = "float64"
+    gpt_oss_large_cfg.torch_dtype = (
+        "float32"  # transformers v5 MoE integration layer doesn't support float64
+    )
 
     clt = CrossLayerTranscoder(
         n_layers=gpt_oss_large_cfg.num_hidden_layers,
@@ -398,7 +400,7 @@ def load_large_gpt_oss_model_with_dummy_clt():
         lazy_encoder=False,
         feature_input_hook="hook_resid_mid",
         feature_output_hook="hook_mlp_out",
-        dtype=torch.float64,
+        dtype=torch.float32,  # transformers v5 MoE integration layer doesn't support float64
     )
 
     initialize_transcoder_weights(clt.W_enc, clt.W_dec, clt.b_enc, clt.b_dec)
@@ -408,7 +410,17 @@ def load_large_gpt_oss_model_with_dummy_clt():
     model.tokenizer.pad_token = model.tokenizer.eos_token  # type:ignore
 
     s = torch.tensor([0, 102, 20, 57, 21])
-    _, activations = model.get_activations(s)
+    # This fixture pairs a dummy vocab_size=128 config with the real tokenizer, so the
+    # tokenizer's own BOS id is out of range for this model's embedding. get_activations
+    # now canonicalizes its input and prepends a special token unless one is already
+    # leading, so treat id 0 as special here, exactly as the tests using this fixture do.
+    tokenizer_class = type(model.tokenizer)
+    original_all_special_ids = tokenizer_class.all_special_ids  # type:ignore
+    try:
+        tokenizer_class.all_special_ids = property(lambda self: [0])  # type:ignore
+        _, activations = model.get_activations(s)
+    finally:
+        tokenizer_class.all_special_ids = original_all_special_ids  # type:ignore
     assert isinstance(clt.activation_function, JumpReLU)
     set_l0_via_thresholds(activations, clt.activation_function.threshold, target_l0=16)
 
@@ -474,7 +486,7 @@ def test_large_gpt_oss_model():
     gpt_oss_large_cfg.num_attention_heads = 16
     gpt_oss_large_cfg.num_key_value_heads = 16
     gpt_oss_large_cfg.pad_token_id = 127
-    gpt_oss_large_cfg.torch_dtype = "float64"
+    gpt_oss_large_cfg.torch_dtype = "float32"  # transformers v5 MoE doesn't support float64
     model = load_dummy_gpt_oss_model(gpt_oss_large_cfg)  # type:ignore
 
     # Save original property to restore later
@@ -485,8 +497,14 @@ def test_large_gpt_oss_model():
         graph = attribute(s, model)
         assert isinstance(model, NNSightReplacementModel)
 
-        verify_token_and_error_edges(model, graph)
-        verify_feature_edges(model, graph)
+        # Use relaxed tolerances for float32 (transformers v5 MoE doesn't support float64)
+        # With 16 layers and random weights, accumulated float32 errors require looser atol
+        verify_token_and_error_edges(
+            model, graph, act_atol=1.5, act_rtol=1e-2, logit_atol=1.5, logit_rtol=1e-2
+        )
+        verify_feature_edges(
+            model, graph, act_atol=1.5, act_rtol=1e-2, logit_atol=1.5, logit_rtol=1e-2
+        )
     finally:
         # Restore original property
         tokenizer_class.all_special_ids = original_all_special_ids  # type:ignore

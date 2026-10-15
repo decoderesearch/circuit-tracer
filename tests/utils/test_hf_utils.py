@@ -69,7 +69,12 @@ class TestHfUtilsDownload(unittest.TestCase):
         # Setup: Pre-flight check passes, as repo_info just returns metadata.
         mock_repo_info.return_value = mock.MagicMock(private=False, gated=True)
         # Setup: The download itself will fail.
-        mock_download.side_effect = GatedRepoError("User has not accepted terms.")
+        # huggingface_hub >=1.3.4 requires a response parameter for HfHubHTTPError subclasses
+        mock_response = mock.MagicMock()
+        mock_response.status_code = 403
+        mock_download.side_effect = GatedRepoError(
+            "User has not accepted terms.", response=mock_response
+        )
 
         # Execute & Assert: Check that the GatedRepoError is raised by the function.
         with self.assertRaises(GatedRepoError):
@@ -99,7 +104,12 @@ class TestHfUtilsDownload(unittest.TestCase):
         """Tests a private repo the user can't see, or a repo that doesn't exist.
         Pre-flight check fails and error is propagated
         """
-        mock_repo_info.side_effect = RepositoryNotFoundError("Repo not found.")
+        # huggingface_hub >=1.3.4 requires a response parameter for HfHubHTTPError subclasses
+        mock_response = mock.MagicMock()
+        mock_response.status_code = 404
+        mock_repo_info.side_effect = RepositoryNotFoundError(
+            "Repo not found.", response=mock_response
+        )
 
         with self.assertRaises(RepositoryNotFoundError):
             download_hf_uris([TEST_URI])
