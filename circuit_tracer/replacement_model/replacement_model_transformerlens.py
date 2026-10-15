@@ -12,6 +12,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
+from circuit_tracer.replacement_model._utils import zero_special_positions
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
@@ -292,7 +293,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             )
 
             if not append:
-                transcoder_acts[self.zero_positions] = 0
+                zero_special_positions(transcoder_acts, self.zero_positions)
 
             if sparse:
                 transcoder_acts = transcoder_acts.to_sparse()
