@@ -928,5 +928,12 @@ class TransformerLensReplacementModel(HookedTransformer):
         return generation, logits.squeeze(0), activations
 
     def __del__(self):
-        # Prevent memory leaks
-        self.reset_hooks(including_permanent=True)
+        # Prevent memory leaks. Guard against errors during interpreter teardown:
+        # at shutdown, torch type objects may be partially collected, so
+        # reset_hooks() can raise (e.g. "TypeError: isinstance() arg 2 must be a
+        # type ..." from torch.nn.Parameter.__instancecheck__), surfacing as a noisy
+        # "Exception ignored in __del__". Destructors must not raise.
+        try:
+            self.reset_hooks(including_permanent=True)
+        except Exception:
+            pass
