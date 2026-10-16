@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     )
 
 
+# MPS rejects strided bmm inputs (inside einsum) whose storage has more than INT_MAX elements
+MAX_GATHER_ELEMENTS = torch.iinfo(torch.int32).max
+
+
 class AttributionContext:
     """Manage hooks for computing attribution rows.
 
@@ -105,11 +109,23 @@ class AttributionContext:
         proxy = weakref.proxy(self)
 
         def _hook_fn(grads: torch.Tensor, hook: HookPoint) -> None:
-            proxy._batch_buffer[write_index] += einsum(
-                grads.to(output_vecs.dtype)[read_index],
-                output_vecs,
-                "batch position d_model, position d_model -> position batch",
-            )
+            grads = grads.to(output_vecs.dtype)
+            if not isinstance(read_index, tuple):  # error and token nodes: no gather
+                proxy._batch_buffer[write_index] += einsum(
+                    grads[read_index],
+                    output_vecs,
+                    "batch position d_model, position d_model -> position batch",
+                )
+                return
+            # Feature nodes: chunk so each gathered (batch, rows, d_model) gradient block
+            # has at most MAX_GATHER_ELEMENTS elements
+            step = max(1, MAX_GATHER_ELEMENTS // (grads.shape[0] * grads.shape[-1]))
+            for i in range(0, output_vecs.shape[0], step):
+                proxy._batch_buffer[write_index[i : i + step]] += einsum(  # type: ignore
+                    grads[:, read_index[1][i : i + step]],
+                    output_vecs[i : i + step],
+                    "batch position d_model, position d_model -> position batch",
+                )
 
         return hook_name, _hook_fn
 
