@@ -144,21 +144,33 @@ def test_encode_sparse_with_lazy_encoder(create_test_clt_files):
     assert lazy_encoders.shape[1] == lazy_clt.d_model
 
 
-def test_decoder_slice_access(create_test_clt_files):
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
+    ],
+)
+def test_decoder_slice_access(device, create_test_clt_files):
     """Test _get_decoder_vectors with lazy and eager decoder."""
     clt_path = create_test_clt_files()
 
     # Test with different decoder loading modes
     lazy_clt = load_clt(
         clt_path,
-        device=torch.device("cpu"),
+        device=torch.device(device),
         lazy_encoder=False,
         lazy_decoder=True,
     )
 
     eager_clt = load_clt(
         clt_path,
-        device=torch.device("cpu"),
+        device=torch.device(device),
         lazy_encoder=False,
         lazy_decoder=False,
     )
