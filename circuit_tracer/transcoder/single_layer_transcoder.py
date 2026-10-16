@@ -457,7 +457,10 @@ def load_transcoder(
         device = get_default_device()
 
     param_dict = {}
-    with safe_open(path, framework="pt", device=str(device)) as f:
+    # MPS: read and cast on the CPU. Casting on the GPU queues every layer into one Metal
+    # command buffer, which fails silently (all-zero weights) once it exceeds the GPU's working set
+    read_device = "cpu" if torch.device(device).type == "mps" else str(device)
+    with safe_open(path, framework="pt", device=read_device) as f:
         for k in f.keys():
             if lazy_encoder and k == "W_enc":
                 continue
@@ -489,7 +492,7 @@ def load_transcoder(
             lazy_decoder=lazy_decoder,
         )
     transcoder.load_state_dict(param_dict, assign=True)
-    return transcoder.to(dtype)
+    return transcoder.to(device, dtype)
 
 
 def load_gemma_scope_2_transcoder(
