@@ -262,18 +262,22 @@ class NNSightReplacementModel(TransformersModel):
         for param in self.parameters():
             param.requires_grad = False
 
-    def configure_gradient_flow(self, tracer):
+    def configure_gradient_flow(
+        self, tracer, freeze_attention: bool = True, freeze_layernorm: bool = True
+    ):
         with tracer.invoke():
             self.embed_location.output.requires_grad = True  # type: ignore
 
-        with tracer.invoke():
-            for freeze_loc in self.attention_locs:
-                freeze_loc.output = freeze_loc.output.detach()  # type: ignore
-
-        for layernorm_scale_locs_list in self.layernorm_scale_locs:
+        if freeze_attention:
             with tracer.invoke():
-                for freeze_loc in layernorm_scale_locs_list:
+                for freeze_loc in self.attention_locs:
                     freeze_loc.output = freeze_loc.output.detach()  # type: ignore
+
+        if freeze_layernorm:
+            for layernorm_scale_locs_list in self.layernorm_scale_locs:
+                with tracer.invoke():
+                    for freeze_loc in layernorm_scale_locs_list:
+                        freeze_loc.output = freeze_loc.output.detach()  # type: ignore
 
     def configure_skip_connection(self, tracer, barrier=None):
         transcoders = (

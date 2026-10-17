@@ -52,6 +52,8 @@ def attribute(
     offload: Literal["cpu", "disk", None] = None,
     verbose: bool = False,
     update_interval: int = 4,
+    freeze_attention: bool = True,
+    freeze_layernorm: bool = True,
 ) -> Graph:
     """Compute an attribution graph for *prompt* using TransformerLens backend.
 
@@ -75,6 +77,15 @@ def attribute(
                  or None (no offloading).
         verbose: Whether to show progress information.
         update_interval: Number of batches to process before updating the feature ranking.
+        freeze_attention: If True (default), attention patterns are treated as constants
+            (detached), so edges only follow OV paths. If False, gradients also flow through
+            the attention pattern (QK paths), and edges become the exact first-order
+            (Jacobian) attributions of the replacement model.
+        freeze_layernorm: If True (default), LayerNorm/RMSNorm scales are detached. If False,
+            gradients flow through the normalization scale. With both set to False, the graph
+            is the first-order expansion of the replacement model around the prompt: edges no
+            longer sum exactly to the target, but path sums predict intervention effects much
+            better.
 
     Returns:
         Graph: Fully dense adjacency (unpruned).
@@ -107,8 +118,11 @@ def attribute(
             offload_handles=offload_handles,
             update_interval=update_interval,
             logger=logger,
+            freeze_attention=freeze_attention,
+            freeze_layernorm=freeze_layernorm,
         )
     finally:
+        model.set_gradient_flow()  # restore the defaults for later calls
         for reload_handle in offload_handles:
             reload_handle()
 
@@ -129,6 +143,8 @@ def _run_attribution(
     offload_handles,
     logger,
     update_interval=4,
+    freeze_attention=True,
+    freeze_layernorm=True,
 ):
     start_time = time.time()
     # Phase 0: precompute
@@ -136,6 +152,7 @@ def _run_attribution(
     phase_start = time.time()
     input_ids = model.ensure_tokenized(prompt)
 
+    model.set_gradient_flow(freeze_attention=freeze_attention, freeze_layernorm=freeze_layernorm)
     ctx = model.setup_attribution(input_ids)
     activation_matrix = ctx.activation_matrix
 
