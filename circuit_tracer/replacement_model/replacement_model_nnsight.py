@@ -14,7 +14,7 @@ from nnsight import TransformersModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 from circuit_tracer.attribution.context_nnsight import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
-from circuit_tracer.utils import get_default_device
+from circuit_tracer.utils import as_token_sequence, get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 from circuit_tracer.utils.tl_nnsight_mapping import (
     get_mapping,
@@ -436,14 +436,11 @@ class NNSightReplacementModel(TransformersModel):
                 prompt, return_tensors="pt", add_special_tokens=False
             ).input_ids.squeeze(0)
         elif isinstance(prompt, torch.Tensor):
-            tokens = prompt.squeeze()
+            tokens = as_token_sequence(prompt)
         elif isinstance(prompt, list):
-            tokens = torch.tensor(prompt, dtype=torch.long).squeeze()
+            tokens = as_token_sequence(torch.tensor(prompt, dtype=torch.long))
         else:
             raise TypeError(f"Unsupported prompt type: {type(prompt)}")
-
-        if tokens.ndim > 1:
-            raise ValueError(f"Tensor must be 1-D, got shape {tokens.shape}")
 
         tokens = tokens.to(self.device)
 
@@ -495,7 +492,7 @@ class NNSightReplacementModel(TransformersModel):
         if isinstance(inputs, str):
             tokens = self.ensure_tokenized(inputs)
         else:
-            tokens = inputs.squeeze()
+            tokens = as_token_sequence(inputs)
 
         assert isinstance(tokens, torch.Tensor), "Tokens must be a tensor"
         assert tokens.ndim == 1, "Tokens must be a 1D tensor"
