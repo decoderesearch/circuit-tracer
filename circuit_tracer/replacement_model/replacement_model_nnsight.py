@@ -512,6 +512,11 @@ class NNSightReplacementModel(TransformersModel):
         transcoders = self.transcoders
 
         with self.trace(tokens):
+            # The token nodes' vectors are the embedding location's own output, the tensor whose
+            # gradient attribution reads. Raw embedding rows match it only where the model scales
+            # embeddings after that location; Gemma 3 scales by sqrt(d_model) inside its embedding
+            # module.
+            embedded = save(self.embed_location.output)
             mlp_in_cache, mlp_out_cache = [], []
             for feature_input_loc, feature_output_loc in zip(
                 self.feature_input_locs, self.feature_output_locs
@@ -536,9 +541,7 @@ class NNSightReplacementModel(TransformersModel):
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
         error_vectors[:, self.zero_positions] = 0
-        token_vectors = self.embed_weight[  # type: ignore
-            tokens
-        ].detach()  # (n_pos, d_model)  # type: ignore
+        token_vectors = embedded[0].detach()  # (n_pos, d_model)
 
         return AttributionContext(
             activation_matrix=attribution_data["activation_matrix"],
