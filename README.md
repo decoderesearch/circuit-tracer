@@ -123,6 +123,7 @@ You must set `--slug` and `--graph_file_dir`, or `--graph_output_path`, or both!
 - `--batch_size` (default: 256): Batch size for backward passes
 - `--max_feature_nodes`: Maximum number of feature nodes (defaults to 7500)
 - `--dtype`: Datatype in which to load the model / transcoders (allowed: `float32/fp32`, `float16/fp16`, `bfloat16/bf16`)
+- `--device`: Device to load the model / transcoders on (e.g. `cuda`, `cuda:1`, `mps`, `cpu`; defaults to `cuda` if available, else `cpu`)
 - `--offload`: Memory optimization option (`cpu`, `disk`, or `None`)
 - `--verbose`: Display detailed progress information
 
