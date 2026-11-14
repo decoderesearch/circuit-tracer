@@ -54,6 +54,15 @@ def main():
         help="Data type for model weights (default: float32).",
     )
     attr_parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help=(
+            "Device to load the model and transcoders on (e.g. cuda, cuda:1, mps, cpu). "
+            "Defaults to cuda if available, else cpu."
+        ),
+    )
+    attr_parser.add_argument(
         "--max_n_logits", type=int, default=10, help="Maximum number of logit nodes."
     )
     attr_parser.add_argument(
@@ -211,9 +220,18 @@ def run_attribution(args, parser):
         dtype = dtype_mapping[dtype]
     dtype = getattr(torch, dtype)
 
+    device = None
+    if args.device is not None:
+        try:
+            device = torch.device(args.device)
+        except RuntimeError:
+            parser.error(f"--device: invalid device string {args.device!r}")
+
     # Run attribution
     logging.info(f"Generating attribution graph for model: {args.model}")
     logging.info(f"Loading model with dtype: {dtype}")
+    if device is not None:
+        logging.info(f"Loading model on device: {device}")
     logging.info(f'Input prompt: "{args.prompt}"')
     if args.graph_output_path:
         logging.info(f"Output will be saved to: {args.graph_output_path}")
@@ -229,6 +247,7 @@ def run_attribution(args, parser):
 
     transcoder, config = load_transcoder_from_hub(
         args.transcoder_set,
+        device=device,
         dtype=dtype,
         lazy_encoder=args.lazy_encoder,
         lazy_decoder=args.lazy_decoder,
@@ -238,7 +257,7 @@ def run_attribution(args, parser):
         parser.error("--model must be specified when not provided in transcoder config")
 
     model_instance = ReplacementModel.from_pretrained_and_transcoders(
-        args.model, transcoder, dtype=dtype, backend=args.backend
+        args.model, transcoder, device=device, dtype=dtype, backend=args.backend
     )
 
     logging.info("Running attribution...")
@@ -269,6 +288,7 @@ def run_attribution(args, parser):
             output_path=args.graph_file_dir,
             node_threshold=args.node_threshold,
             edge_threshold=args.edge_threshold,
+            device=device,
         )
         logging.info(f"Graph JSON files written to {args.graph_file_dir}")
 
