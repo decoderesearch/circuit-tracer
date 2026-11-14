@@ -468,9 +468,14 @@ def load_transcoder(
     d_sae = param_dict["b_enc"].shape[0]
     d_model = param_dict["b_dec"].shape[0]
 
+    # `to_safetensors` stores k for top-k transcoders; it is not a parameter
+    stored_k = param_dict.pop("k", None)
+
     # JumpReLU
     if activation_fn is None:
-        if "activation_function.threshold" in param_dict:
+        if stored_k is not None:
+            activation_function = TopK(int(stored_k.item()))
+        elif "activation_function.threshold" in param_dict:
             activation_function = JumpReLU(param_dict["activation_function.threshold"], 0.1)
         else:
             activation_function = F.relu

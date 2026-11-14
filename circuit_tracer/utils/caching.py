@@ -426,6 +426,8 @@ def load_transcoders_from_cache(
             feature_output_hook=config["feature_output_hook"],
             device=device,
             dtype=dtype,
+            activation=config.get("activation"),
+            k=config.get("k"),
             lazy_encoder=lazy_encoder,
             lazy_decoder=lazy_decoder,
         )
