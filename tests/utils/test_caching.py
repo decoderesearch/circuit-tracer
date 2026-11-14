@@ -165,3 +165,121 @@ def test_cache_directory_from_env_var():
         # Always clean up test cache directory
         if env_cache_dir.exists():
             shutil.rmtree(env_cache_dir)
+
+
+def _write_layers(directory: Path, n_layers: int = 2, d_model: int = 8, d_transcoder: int = 16):
+    from safetensors.torch import save_file
+
+    for i in range(n_layers):
+        save_file(
+            {
+                "W_enc": torch.randn(d_transcoder, d_model),
+                "W_dec": torch.randn(d_transcoder, d_model),
+                "b_enc": torch.zeros(d_transcoder),
+                "b_dec": torch.zeros(d_model),
+            },
+            str(directory / f"layer_{i}.safetensors"),
+        )
+
+
+def _write_config(directory: Path, **extra):
+    import yaml
+
+    config = {
+        "model_kind": "transcoder_set",
+        "feature_input_hook": "mlp.hook_in",
+        "feature_output_hook": "mlp.hook_out",
+        **extra,
+    }
+    with open(directory / "config.yaml", "w") as f:
+        yaml.safe_dump(config, f)
+
+
+def test_local_folder_keeps_topk_activation(tmp_path):
+    """activation/k in config.yaml must survive the cache / local-folder loading path."""
+    from circuit_tracer.transcoder.activation_functions import TopK
+
+    folder = tmp_path / "my-topk-transcoders"
+    folder.mkdir()
+    _write_layers(folder)
+    _write_config(folder, activation="topk", k=2)
+
+    transcoders, _ = load_transcoder_from_hub(
+        "my-topk-transcoders",
+        cache_dir=str(tmp_path),
+        device=torch.device("cpu"),
+        lazy_encoder=False,
+        lazy_decoder=False,
+    )
+
+    for transcoder in transcoders:
+        assert isinstance(transcoder.activation_function, TopK)
+        assert transcoder.activation_function.k == 2
+    acts = transcoders[0].encode(torch.randn(5, 8))
+    assert ((acts > 0).sum(-1) <= 2).all()
+
+
+def test_topk_transcoder_set_to_safetensors_round_trip(tmp_path):
+    """A top-k set saved with to_safetensors loads back as top-k with the same outputs."""
+    from circuit_tracer.transcoder.activation_functions import TopK
+    from circuit_tracer.transcoder.single_layer_transcoder import load_transcoder_set
+
+    src, out = tmp_path / "src", tmp_path / "out"
+    src.mkdir()
+    _write_layers(src)
+    paths = {i: str(src / f"layer_{i}.safetensors") for i in range(2)}
+    original = load_transcoder_set(
+        paths,
+        scan_name="test",
+        feature_input_hook="mlp.hook_in",
+        feature_output_hook="mlp.hook_out",
+        device=torch.device("cpu"),
+        activation="topk",
+        k=3,
+        lazy_encoder=False,
+        lazy_decoder=False,
+    )
+    original.to_safetensors(str(out))
+    _write_config(out)  # no activation in the config: k comes from the saved files
+
+    reloaded, _ = load_transcoder_from_hub(
+        "out",
+        cache_dir=str(tmp_path),
+        device=torch.device("cpu"),
+        lazy_encoder=False,
+        lazy_decoder=False,
+    )
+
+    x = torch.randn(4, 8)
+    for a, b in zip(original, reloaded):
+        assert isinstance(b.activation_function, TopK) and b.activation_function.k == 3
+        torch.testing.assert_close(a.encode(x), b.encode(x))
+
+
+def test_save_transcoders_to_cache_keeps_topk(tmp_path, monkeypatch):
+    """The Hub -> cache -> load round trip keeps a top-k set's activation (as for crv-8b-instruct)."""
+    import circuit_tracer.utils.caching as caching
+    import circuit_tracer.utils.hf_utils as hf_utils
+    from circuit_tracer.transcoder.activation_functions import TopK
+
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    _write_layers(hub)
+    _write_config(hub, activation="topk", k=2)
+    monkeypatch.setattr(caching, "hf_hub_download", lambda **kw: str(hub / "config.yaml"))
+    monkeypatch.setattr(hf_utils, "snapshot_download", lambda *a, **kw: str(hub))
+
+    cache_dir = tmp_path / "cache"
+    save_transcoders_to_cache("org/topk-test", cache_dir=str(cache_dir), delete_hf_cache=False)
+    assert is_cached("org/topk-test", str(cache_dir))
+
+    transcoders, _ = load_transcoder_from_hub(
+        "org/topk-test",
+        cache_dir=str(cache_dir),
+        device=torch.device("cpu"),
+        lazy_encoder=False,
+        lazy_decoder=False,
+    )
+    for transcoder in transcoders:
+        assert isinstance(transcoder.activation_function, TopK)
+        assert transcoder.activation_function.k == 2
