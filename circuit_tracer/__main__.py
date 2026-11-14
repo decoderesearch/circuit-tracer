@@ -85,9 +85,12 @@ def main():
     )
     attr_parser.add_argument(
         "--lazy-decoder",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable lazy loading for decoder weights to save memory (default: True).",
+        help=(
+            "Load decoder weights lazily to save memory (the default). Use --no-lazy-decoder "
+            "to load them eagerly."
+        ),
     )
     attr_parser.add_argument(
         "--backend",
