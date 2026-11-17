@@ -730,6 +730,7 @@ def _load_clt_checkpoint(
                     f"Inconsistent TopK k values in {enc_file}: all layers must include "
                     "k or none may include it"
                 )
+
             if has_skip:
                 state_dict["W_skip"][i] = f.get_tensor(f"W_skip_{i}").to(dtype)
 
