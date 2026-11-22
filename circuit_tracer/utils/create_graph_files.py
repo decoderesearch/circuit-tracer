@@ -165,6 +165,7 @@ def create_graph_files(
     scan_name=None,
     node_threshold=0.8,
     edge_threshold=0.98,
+    device: torch.device | str | None = None,
 ):
     # Import Graph/prune_graph locally to avoid circular import at module import time
     from circuit_tracer.graph import Graph, prune_graph
@@ -189,7 +190,8 @@ def create_graph_files(
             )
         scan_name = graph.scan_name
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     graph.to(device)
     node_mask, edge_mask, cumulative_scores = (
         el.cpu() for el in prune_graph(graph, node_threshold, edge_threshold)
