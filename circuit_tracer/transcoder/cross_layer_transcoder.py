@@ -229,8 +229,9 @@ class CrossLayerTranscoder(torch.nn.Module):
         path = os.path.join(self.clt_path, f"W_dec_{layer_id}.safetensors")
         if isinstance(to_read, torch.Tensor):
             to_read = to_read.cpu()
-        with safe_open(path, framework="pt", device=str(self.device)) as f:
-            return f.get_slice(f"W_dec_{layer_id}")[to_read].to(dtype=self.dtype)
+        read_device = "cpu" if self.device.type == "mps" else str(self.device)
+        with safe_open(path, framework="pt", device=read_device) as f:
+            return f.get_slice(f"W_dec_{layer_id}")[to_read].to(self.device, self.dtype)
 
     def select_decoder_vectors(self, features):
         if not features.is_sparse:

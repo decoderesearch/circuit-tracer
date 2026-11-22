@@ -155,32 +155,44 @@ def test_sparse_encode_decode(create_test_transcoder_file):
     assert len(scaled_decoders) == sparse_acts._nnz()
 
 
-def test_decoder_slice_access(create_test_transcoder_file):
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
+    ],
+)
+def test_decoder_slice_access(device, create_test_transcoder_file):
     """Test _get_decoder_vectors with both lazy and eager decoder."""
     path, expected_state = create_test_transcoder_file(d_model=128, d_sae=512)
 
     # Test eager decoder
     eager_transcoder = load_transcoder(
-        path, layer=0, lazy_encoder=True, lazy_decoder=False, device=torch.device("cpu")
+        path, layer=0, lazy_encoder=True, lazy_decoder=False, device=torch.device(device)
     )
 
     # Test lazy decoder
     lazy_transcoder = load_transcoder(
-        path, layer=0, lazy_encoder=True, lazy_decoder=True, device=torch.device("cpu")
+        path, layer=0, lazy_encoder=True, lazy_decoder=True, device=torch.device(device)
     )
 
     # Test full access
     eager_full = eager_transcoder._get_decoder_vectors()
     lazy_full = lazy_transcoder._get_decoder_vectors()
     assert torch.allclose(eager_full, lazy_full)
-    assert torch.allclose(eager_full, expected_state["W_dec"])
+    assert torch.allclose(eager_full.cpu(), expected_state["W_dec"])
 
     # Test slice access
     indices = torch.tensor([10, 50, 100, 200])
     eager_slice = eager_transcoder._get_decoder_vectors(indices)
     lazy_slice = lazy_transcoder._get_decoder_vectors(indices)
     assert torch.allclose(eager_slice, lazy_slice)
-    assert torch.allclose(eager_slice, expected_state["W_dec"][indices])
+    assert torch.allclose(eager_slice.cpu(), expected_state["W_dec"][indices])
 
 
 def test_encode_decode_operations(create_test_transcoder_file):
