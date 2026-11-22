@@ -472,6 +472,10 @@ def load_transcoder(
     d_sae = param_dict["b_enc"].shape[0]
     d_model = param_dict["b_dec"].shape[0]
 
+    # `to_safetensors` also writes k for top-k transcoders. It is not a parameter,
+    # and the activation and k are taken from config.yaml, so it is dropped here.
+    param_dict.pop("k", None)
+
     # JumpReLU
     if activation_fn is None:
         if "activation_function.threshold" in param_dict:
