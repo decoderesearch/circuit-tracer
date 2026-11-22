@@ -212,6 +212,7 @@ def test_local_folder_keeps_topk_activation(tmp_path):
         lazy_decoder=False,
     )
 
+    assert isinstance(transcoders, TranscoderSet)
     for transcoder in transcoders:
         assert isinstance(transcoder.activation_function, TopK)
         assert transcoder.activation_function.k == 2
@@ -220,7 +221,7 @@ def test_local_folder_keeps_topk_activation(tmp_path):
 
 
 def test_topk_transcoder_set_to_safetensors_round_trip(tmp_path):
-    """A top-k set saved with to_safetensors loads back as top-k with the same outputs."""
+    """A top-k set saved with to_safetensors, with activation and k in config.yaml, loads back as top-k with the same outputs."""
     from circuit_tracer.transcoder.activation_functions import TopK
     from circuit_tracer.transcoder.single_layer_transcoder import load_transcoder_set
 
@@ -240,7 +241,7 @@ def test_topk_transcoder_set_to_safetensors_round_trip(tmp_path):
         lazy_decoder=False,
     )
     original.to_safetensors(str(out))
-    _write_config(out)  # no activation in the config: k comes from the saved files
+    _write_config(out, activation="topk", k=3)  # config.yaml is the source of activation and k
 
     reloaded, _ = load_transcoder_from_hub(
         "out",
@@ -250,6 +251,7 @@ def test_topk_transcoder_set_to_safetensors_round_trip(tmp_path):
         lazy_decoder=False,
     )
 
+    assert isinstance(reloaded, TranscoderSet)
     x = torch.randn(4, 8)
     for a, b in zip(original, reloaded):
         assert isinstance(b.activation_function, TopK) and b.activation_function.k == 3
@@ -280,6 +282,7 @@ def test_save_transcoders_to_cache_keeps_topk(tmp_path, monkeypatch):
         lazy_encoder=False,
         lazy_decoder=False,
     )
+    assert isinstance(transcoders, TranscoderSet)
     for transcoder in transcoders:
         assert isinstance(transcoder.activation_function, TopK)
         assert transcoder.activation_function.k == 2
