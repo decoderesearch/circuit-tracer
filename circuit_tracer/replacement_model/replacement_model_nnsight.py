@@ -382,7 +382,8 @@ class NNSightReplacementModel(TransformersModel):
         _, fetch_activations = self.get_activation_fn(
             sparse=sparse, apply_activation_function=apply_activation_function
         )
-        with torch.inference_mode(), self.trace(inputs):
+        trace_inputs = self._trace_input_tokens(inputs)
+        with torch.inference_mode(), self.trace(trace_inputs):
             logits, activation_cache = fetch_activations()  # type:ignore
             logits = save(logits)  # type: ignore
             activation_cache = save(activation_cache)  # type: ignore
@@ -482,6 +483,11 @@ class NNSightReplacementModel(TransformersModel):
 
         return tokens.to(self.device)
 
+    def _trace_input_tokens(self, inputs: str | torch.Tensor | list[int]) -> torch.Tensor:
+        """Canonicalize inputs to the exact token tensor used for tracing/invocation."""
+
+        return self.ensure_tokenized(inputs)
+
     @torch.no_grad()
     def setup_attribution(self, inputs: str | torch.Tensor):
         """Precomputes the transcoder activations and error vectors, saving them and the
@@ -506,6 +512,11 @@ class NNSightReplacementModel(TransformersModel):
         transcoders = self.transcoders
 
         with self.trace(tokens):
+            # The token nodes' vectors are the embedding location's own output, the tensor whose
+            # gradient attribution reads. Raw embedding rows match it only where the model scales
+            # embeddings after that location; Gemma 3 scales by sqrt(d_model) inside its embedding
+            # module.
+            embedded = save(self.embed_location.output)
             mlp_in_cache, mlp_out_cache = [], []
             for feature_input_loc, feature_output_loc in zip(
                 self.feature_input_locs, self.feature_output_locs
@@ -530,9 +541,7 @@ class NNSightReplacementModel(TransformersModel):
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
         error_vectors[:, self.zero_positions] = 0
-        token_vectors = self.embed_weight[  # type: ignore
-            tokens
-        ].detach()  # (n_pos, d_model)  # type: ignore
+        token_vectors = embedded[0].detach()  # (n_pos, d_model)
 
         return AttributionContext(
             activation_matrix=attribution_data["activation_matrix"],
@@ -580,10 +589,11 @@ class NNSightReplacementModel(TransformersModel):
         # This gets around it.
         transcoders = self.transcoders
         skip_transcoder = self.skip_transcoder
+        trace_inputs = self._trace_input_tokens(inputs)
 
         # get transcoder activations and values to freeze to
         with self.trace() as tracer:
-            with tracer.invoke(inputs):
+            with tracer.invoke(trace_inputs):
                 activation_fn()  # type:ignore
             dict_to_freeze = save(get_locs_to_freeze())  # type: ignore
             for freeze_loc_name, loc_type_to_freeze in get_locs_to_freeze().items():
@@ -676,7 +686,7 @@ class NNSightReplacementModel(TransformersModel):
         elif original_activations is not None:
             n_pos = original_activations.size(1)
         else:
-            n_pos = len(self.tokenizer(inputs).input_ids)
+            n_pos = int(self._trace_input_tokens(inputs).shape[0])
 
         layer_deltas = torch.zeros(
             [self.cfg.n_layers, n_pos, self.cfg.d_model],
@@ -786,6 +796,7 @@ class NNSightReplacementModel(TransformersModel):
             )
         else:
             original_activations, freeze_fns = None, []
+        trace_inputs = self._trace_input_tokens(inputs)
 
         intervention_layers = set()
         for layer, _, _, _ in interventions:
@@ -799,7 +810,7 @@ class NNSightReplacementModel(TransformersModel):
             activation_barrier = None if constrained_layers else tracer.barrier(2)
             direct_effects_barrier = tracer.barrier(2) if constrained_layers else None
 
-            with tracer.invoke(inputs):
+            with tracer.invoke(trace_inputs):
                 _, activation_cache = activation_fn(
                     barrier=activation_barrier,  # type:ignore
                     barrier_layers=intervention_layers,
@@ -813,7 +824,7 @@ class NNSightReplacementModel(TransformersModel):
 
             with tracer.invoke():
                 cached_logits = self._perform_feature_intervention(
-                    inputs,
+                    trace_inputs,
                     interventions,
                     activation_matrix,  # type: ignore
                     original_activations,
@@ -914,6 +925,7 @@ class NNSightReplacementModel(TransformersModel):
             )
         else:
             original_activations, freeze_fns = None, []
+        trace_inputs = self._trace_input_tokens(inputs)
 
         intervention_layers = set()
         for layer, _, _, _ in interventions:
@@ -933,7 +945,7 @@ class NNSightReplacementModel(TransformersModel):
             activation_barrier = tracer.barrier(2)
             direct_effects_barrier = tracer.barrier(2) if constrained_layers else None
 
-            with tracer.invoke(inputs):
+            with tracer.invoke(trace_inputs):
                 for act_idx in tracer.iter[:]:
                     current_intervention_layers = (
                         intervention_layers if act_idx == 0 else converted_intervention_layers
@@ -963,7 +975,7 @@ class NNSightReplacementModel(TransformersModel):
             with tracer.invoke():
                 for idx in tracer.iter[:]:
                     logits = self._perform_feature_intervention(
-                        inputs=inputs,
+                        inputs=trace_inputs,
                         interventions=(interventions if idx == 0 else converted_interventions),
                         activation_matrix=activation_matrix,  # type: ignore
                         original_activations=original_activations,
@@ -978,7 +990,7 @@ class NNSightReplacementModel(TransformersModel):
             with tracer.invoke():
                 out = save(tracer.result)
         return (
-            tokenizer.decode(out.squeeze(0)),
+            str(tokenizer.decode(out.squeeze(0))),
             torch.cat(all_logits, dim=0),
             (activation_cache[0] if return_activations else None),
         )

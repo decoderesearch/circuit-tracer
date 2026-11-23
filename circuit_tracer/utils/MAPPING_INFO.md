@@ -33,8 +33,14 @@ if self.config._attn_implementation != "eager":
 attn_output, attn_weights = attention_interface(...)  # attention_interface_2
 ```
 
--- so the *call* is `attention_interface_2`, and `_0` / `_1` are the two assignments.
-A forward that binds the name only once would put its call at `_1` instead. Asking for
+-- so on transformers v4 the *call* is `attention_interface_2`, and `_0` / `_1` are the
+two assignments. transformers v5 collapses those two assignments into one,
+`attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(...)`, whose lookup
+is a call on a *different* name and so off this counter. That leaves one assignment and one
+call, putting the call at `attention_interface_1`. The table therefore selects the index
+from the installed transformers version (`_ATTN_INTERFACE_CALL` in `tl_nnsight_mapping.py`)
+instead of hardcoding it, and a hardcoded `_2` raises `AttributeError: ... has no operation
+'attention_interface_2'` on v5. Asking for
 an assignment where a call is meant raises `SourceNotAvailable: '...' is an assignment,
 not a call; there is no function to drill into`. To list what a module actually offers:
 
