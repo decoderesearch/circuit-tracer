@@ -618,10 +618,13 @@ class TransformerLensReplacementModel(HookedTransformer):
             n_pos = original_activations.size(1)
         else:
             original_activations, freeze_hooks = [], []
+            # n_pos must match the sequence that self(inputs) runs on: to_tokens may
+            # prepend a BOS that the bare tokenizer does not add, and a (1, n_pos)
+            # tensor is a valid single-sequence input
             if isinstance(inputs, torch.Tensor):
-                n_pos = inputs.size(0)
+                n_pos = inputs.size(-1)
             else:
-                n_pos = len(self.tokenizer(inputs).input_ids)  # type: ignore
+                n_pos = self.to_tokens(inputs).size(-1)
 
         layer_deltas = torch.zeros(
             [self.cfg.n_layers, n_pos, self.cfg.d_model],

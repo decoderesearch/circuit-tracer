@@ -2,8 +2,12 @@ import gc
 
 import pytest
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformer_lens import HookedTransformerConfig
 
 from circuit_tracer import ReplacementModel
+from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 
 
 @pytest.fixture(autouse=True)
@@ -384,3 +388,68 @@ if __name__ == "__main__":
     test_intervention_sparse_nnsight()
     test_intervention_generate_sparse_tl()
     test_intervention_generate_sparse_nnsight()
+
+
+def load_tiny_gpt2_model():
+    """Random 2-layer model with the GPT-2 tokenizer, which does not add a BOS token
+    itself (TransformerLens's to_tokens prepends one)."""
+    cfg = HookedTransformerConfig(
+        n_layers=2,
+        d_model=16,
+        d_head=4,
+        n_heads=4,
+        d_mlp=32,
+        n_ctx=64,
+        d_vocab=50257,
+        act_fn="gelu_new",
+        normalization_type="LN",
+        tokenizer_name="gpt2",
+        model_name="tiny-gpt2",
+        original_architecture="GPT2LMHeadModel",
+        default_prepend_bos=True,
+        device="cpu",
+    )
+    transcoders = {
+        layer: SingleLayerTranscoder(cfg.d_model, 64, F.relu, layer, device=torch.device("cpu"))
+        for layer in range(cfg.n_layers)
+    }
+    for transcoder in transcoders.values():
+        for _, param in transcoder.named_parameters():
+            nn.init.uniform_(param, a=-1, b=1)
+    transcoder_set = TranscoderSet(
+        transcoders, feature_input_hook="mlp.hook_in", feature_output_hook="mlp.hook_out"
+    )
+    model = ReplacementModel.from_config(cfg, transcoder_set)
+    for _, param in model.named_parameters():
+        nn.init.uniform_(param, a=-1, b=1)
+    return model
+
+
+def test_intervention_without_freeze_string_input_tl():
+    model = load_tiny_gpt2_model()
+    s = "The capital of France is"
+    interventions = [(0, 2, 3, 5.0)]
+
+    # to_tokens prepends BOS, the bare GPT-2 tokenizer does not
+    tokens = model.to_tokens(s)[0]
+    assert len(tokens) == len(model.tokenizer(s).input_ids) + 1  # type: ignore
+
+    logits_str, _ = model.feature_intervention(s, interventions, freeze_attention=False)
+    logits_tok, _ = model.feature_intervention(tokens, interventions, freeze_attention=False)
+
+    assert logits_str.shape[1] == len(tokens)
+    assert torch.allclose(logits_str, logits_tok)
+
+
+def test_intervention_without_freeze_2d_tensor_input_tl():
+    model = load_tiny_gpt2_model()
+    tokens = model.to_tokens("The capital of France is")  # (1, n_pos)
+    interventions = [(0, 0, 3, 5.0)]
+
+    logits_2d, _ = model.feature_intervention(tokens, interventions, freeze_attention=False)
+    logits_1d, _ = model.feature_intervention(tokens[0], interventions, freeze_attention=False)
+    clean_logits = model(tokens)
+
+    assert torch.allclose(logits_2d, logits_1d)
+    # sanity check: the intervention changes the output
+    assert not torch.allclose(logits_2d[:, 0], clean_logits[:, 0])
