@@ -472,7 +472,7 @@ class NNSightReplacementModel(TransformersModel):
         ]
         candidate_bos_token_ids += self.tokenizer.all_special_ids
 
-        dummy_bos_token_id = next(filter(None, candidate_bos_token_ids))
+        dummy_bos_token_id = next((t for t in candidate_bos_token_ids if t is not None), None)
         if dummy_bos_token_id is None:
             warnings.warn(
                 "No suitable special token found for BOS token replacement. The first token will be ignored."
