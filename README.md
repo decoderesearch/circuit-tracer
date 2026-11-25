@@ -20,7 +20,7 @@ Working with Gemma-2 (2B) is possible with relatively limited GPU resources; Col
 Currently, intervening on models with respect to the transcoder features you discover in your graphs is possible both when using `circuit-tracer` in a script or notebook, or on Neuronpedia for Gemma-2 (2B). To perform interventions on Neuronpedia, ensure at least one node is pinned, then click "Steer" in the subgraph.
 
 ### Installation
-To install this library, clone it and run the command  `pip install .` in its directory.
+To install this library, use `pip install circuit-tracer`! Alternatively, you can clone it and run the command  `pip install .` in its directory.
 
 ### Demos
 We include some demos showing how to use our library in the `demos` folder. The main demo is [`demos/circuit_tracing_tutorial.ipynb`](https://github.com/safety-research/circuit-tracer/blob/main/demos/circuit_tracing_tutorial.ipynb), which replicates two of the findings from [this paper](https://transformer-circuits.pub/2025/attribution-graphs/biology.html) using Gemma 2 (2B). All demos except for the Llama demo can be run on Colab.
@@ -174,4 +174,21 @@ You can cite this library as follows:
   year = {2025}
 }
 ```
-or cite the paper [here](https://aclanthology.org/2025.blackboxnlp-1.14/).
+or cite the paper [here](https://aclanthology.org/2025.blackboxnlp-1.14/) as 
+
+```
+@inproceedings{hanna-etal-2025-circuit,
+    title = "Circuit-Tracer: A New Library for Finding Feature Circuits",
+    author = "Hanna, Michael and Piotrowski, Mateusz and Lindsey, Jack and Ameisen, Emmanuel",
+    editor = "Belinkov, Yonatan and Mueller, Aaron and Kim, Najoung and Mohebbi, Hosein and Chen, Hanjie and Arad, Dana and Sarti, Gabriele",
+    booktitle = "Proceedings of the 8th {B}lackbox{NLP} Workshop: Analyzing and Interpreting Neural Networks for {NLP}",
+    month = nov,
+    year = "2025",
+    address = "Suzhou, China",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2025.blackboxnlp-1.14/",
+    doi = "10.18653/v1/2025.blackboxnlp-1.14",
+    pages = "239--249",
+    ISBN = "979-8-89176-346-3",
+}
+```
