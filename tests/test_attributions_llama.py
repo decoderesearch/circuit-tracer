@@ -7,6 +7,7 @@ import torch.nn as nn
 from transformer_lens import HookedTransformerConfig
 
 from circuit_tracer import ReplacementModel
+from circuit_tracer.attribution import context_transformerlens
 from circuit_tracer.attribution.attribute_transformerlens import attribute
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
@@ -136,6 +137,12 @@ def test_small_llama_model():
 
         verify_token_and_error_edges(model, graph)
         verify_feature_edges(model, graph)
+
+        # Chunking the feature-score contraction (one row per chunk) must not change the graph
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(context_transformerlens, "MAX_GATHER_ELEMENTS", 1)
+            chunked_graph = attribute(s, model)
+        torch.testing.assert_close(chunked_graph.adjacency_matrix, graph.adjacency_matrix)
 
 
 def test_large_llama_model():

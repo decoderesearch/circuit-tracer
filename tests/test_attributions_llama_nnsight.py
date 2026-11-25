@@ -8,6 +8,7 @@ import torch.nn as nn
 from transformers import AutoConfig, LlamaConfig
 
 from circuit_tracer import attribute, ReplacementModel
+from circuit_tracer.attribution import context_nnsight
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import TopK
@@ -115,6 +116,12 @@ def test_small_llama_model():
 
         verify_token_and_error_edges(model, graph)
         verify_feature_edges(model, graph)
+
+        # Chunking the feature-score contraction (one row per chunk) must not change the graph
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(context_nnsight, "MAX_GATHER_ELEMENTS", 1)
+            chunked_graph = attribute(s, model)
+        torch.testing.assert_close(chunked_graph.adjacency_matrix, graph.adjacency_matrix)
     finally:
         # Restore original property
         tokenizer_class.all_special_ids = original_all_special_ids  # type:ignore
