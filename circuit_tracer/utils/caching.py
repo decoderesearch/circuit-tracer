@@ -377,6 +377,8 @@ def _save_clt_to_cache(
             dtype=dtype,
             lazy_decoder=False,
             lazy_encoder=False,
+            activation_function=config.get("activation") or config.get("activation_function"),
+            k=config.get("k"),
         )
 
         clt.to_safetensors(str(cache_path))
@@ -441,6 +443,8 @@ def load_transcoders_from_cache(
             dtype=dtype,
             lazy_decoder=lazy_decoder,
             lazy_encoder=lazy_encoder,
+            activation_function=config.get("activation") or config.get("activation_function"),
+            k=config.get("k"),
         )
     else:
         raise ValueError(f"Unknown model kind: {model_kind}")

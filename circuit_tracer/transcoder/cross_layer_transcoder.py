@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 import glob
 import os
 import warnings
@@ -8,8 +9,16 @@ from safetensors import safe_open
 from safetensors.torch import save_file, load_file
 from torch.nn import functional as F
 
-from circuit_tracer.transcoder.activation_functions import JumpReLU
+from circuit_tracer.transcoder.activation_functions import JumpReLU, TopK
 from circuit_tracer.utils import get_default_device
+
+
+def _validate_topk_k(k: int, d_transcoder: int) -> int:
+    if isinstance(k, bool) or not isinstance(k, int):
+        raise ValueError(f"TopK k must be an int, got {type(k).__name__}")
+    if k < 1 or k > d_transcoder:
+        raise ValueError(f"TopK k must be in [1, {d_transcoder}], got {k}")
+    return k
 
 
 class CrossLayerTranscoder(torch.nn.Module):
@@ -52,7 +61,7 @@ class CrossLayerTranscoder(torch.nn.Module):
         n_layers: int,
         d_transcoder: int,
         d_model: int,
-        activation_function: str = "relu",
+        activation_function: str | Callable[[torch.Tensor], torch.Tensor] = "relu",
         skip_connection: bool = False,
         lazy_decoder=True,
         lazy_encoder=False,
@@ -62,6 +71,7 @@ class CrossLayerTranscoder(torch.nn.Module):
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
         clt_path: str | None = None,
+        k: int | Sequence[int] | None = None,
     ):
         super().__init__()
 
@@ -81,11 +91,32 @@ class CrossLayerTranscoder(torch.nn.Module):
         self.scan_name = scan_name
 
         if activation_function == "jump_relu":
-            self.activation_function = JumpReLU(
-                torch.zeros(n_layers, 1, d_transcoder, device=device, dtype=dtype)
-            )
+            self.activation_function: (
+                Callable[[torch.Tensor], torch.Tensor] | torch.nn.ModuleList
+            ) = JumpReLU(torch.zeros(n_layers, 1, d_transcoder, device=device, dtype=dtype))
         elif activation_function == "relu":
             self.activation_function = F.relu
+        elif activation_function == "topk":
+            if k is None:
+                raise ValueError("k must be provided when activation_function='topk'")
+            if isinstance(k, int) and not isinstance(k, bool):
+                self.activation_function = TopK(_validate_topk_k(k, d_transcoder))
+            elif isinstance(k, Sequence) and not isinstance(k, str | bytes):
+                if len(k) != n_layers:
+                    raise ValueError(
+                        f"Expected {n_layers} per-layer k values for TopK CLT, got {len(k)}"
+                    )
+                validated_ks = [_validate_topk_k(k_i, d_transcoder) for k_i in k]
+                if len(set(validated_ks)) == 1:
+                    self.activation_function = TopK(validated_ks[0])
+                else:
+                    self.activation_function = torch.nn.ModuleList(
+                        [TopK(k_i) for k_i in validated_ks]
+                    )
+            else:
+                raise ValueError(f"TopK k must be an int or Sequence[int], got {type(k).__name__}")
+        elif callable(activation_function):
+            self.activation_function = activation_function
         else:
             raise ValueError(f"Invalid activation function: {activation_function}")
 
@@ -163,12 +194,19 @@ class CrossLayerTranscoder(torch.nn.Module):
     def encode(self, x):
         W_enc = self._get_encoder_weights()
         features = torch.einsum("lbd,lfd->lbf", x, W_enc) + self.b_enc[:, None]
+        if isinstance(self.activation_function, torch.nn.ModuleList):
+            return torch.stack(
+                [self.activation_function[i](features[i]) for i in range(self.n_layers)],
+                dim=0,
+            )
         return self.activation_function(features)
 
     def apply_activation_function(self, layer_id, features):
         if isinstance(self.activation_function, JumpReLU):
             mask = features > self.activation_function.threshold[layer_id]
             features = features * mask
+        elif isinstance(self.activation_function, torch.nn.ModuleList):
+            features = self.activation_function[layer_id](features)
         else:
             features = self.activation_function(features)
         return features
@@ -398,6 +436,10 @@ class CrossLayerTranscoder(torch.nn.Module):
         os.makedirs(save_path, exist_ok=True)
 
         has_threshold = isinstance(self.activation_function, JumpReLU)
+        has_single_topk = isinstance(self.activation_function, TopK)
+        has_per_layer_topk = isinstance(self.activation_function, torch.nn.ModuleList) and all(
+            isinstance(mod, TopK) for mod in self.activation_function
+        )
 
         for i in range(self.n_layers):
             # Save encoder weights and biases
@@ -413,6 +455,15 @@ class CrossLayerTranscoder(torch.nn.Module):
             if has_threshold:
                 assert isinstance(self.activation_function, JumpReLU)
                 enc_dict[f"threshold_{i}"] = self.activation_function.threshold[i].squeeze(0).cpu()
+
+            if has_single_topk:
+                assert isinstance(self.activation_function, TopK)
+                enc_dict[f"k_{i}"] = torch.tensor(self.activation_function.k, dtype=torch.int64)
+            elif has_per_layer_topk:
+                assert isinstance(self.activation_function, torch.nn.ModuleList)
+                layer_topk = self.activation_function[i]
+                assert isinstance(layer_topk, TopK)
+                enc_dict[f"k_{i}"] = torch.tensor(layer_topk.k, dtype=torch.int64)
 
             enc_path = os.path.join(save_path, f"W_enc_{i}.safetensors")
             save_file(enc_dict, enc_path)
@@ -436,6 +487,8 @@ def load_clt(
     dtype: torch.dtype = torch.bfloat16,
     lazy_decoder: bool = True,
     lazy_encoder: bool = False,
+    activation_function: str | Callable[[torch.Tensor], torch.Tensor] | None = None,
+    k: int | Sequence[int] | None = None,
 ) -> CrossLayerTranscoder:
     """Load a cross-layer transcoder from safetensors files.
 
@@ -448,6 +501,10 @@ def load_clt(
         feature_output_hook: Hook point where features write to
         scan_name: Optional identifier for feature visualization
         device: Device to load tensors to (defaults to auto-detected)
+        activation_function: Optional activation function name ("relu", "jump_relu", "topk")
+            or callable; inferred from checkpoint tensors if None
+        k: Optional TopK sparsity k (single int or per-layer sequence); inferred from
+            checkpoint k_*/k tensors when omitted
 
     Returns:
         CrossLayerTranscoder: Loaded transcoder instance
@@ -455,14 +512,31 @@ def load_clt(
     if device is None:
         device = get_default_device()
 
-    state_dict = _load_state_dict(clt_path, lazy_decoder, lazy_encoder, device, dtype)
+    state_dict, loaded_k = _load_clt_checkpoint(clt_path, lazy_decoder, lazy_encoder, device, dtype)
 
     # Infer dimensions from loaded tensors
     n_layers = state_dict["b_dec"].shape[0]
     d_transcoder = state_dict["b_enc"].shape[1]
     d_model = state_dict["b_dec"].shape[1]
 
-    act_fn = "jump_relu" if "activation_function.threshold" in state_dict else "relu"
+    resolved_k: int | Sequence[int] | None = None
+    if activation_function is not None:
+        act_fn: str | Callable[[torch.Tensor], torch.Tensor] = activation_function
+        if activation_function == "topk":
+            resolved_k = k if k is not None else loaded_k
+            if resolved_k is None:
+                raise ValueError(
+                    "k must be provided via argument or checkpoint when activation_function='topk'"
+                )
+        elif activation_function != "jump_relu":
+            state_dict.pop("activation_function.threshold", None)
+    elif "activation_function.threshold" in state_dict:
+        act_fn = "jump_relu"
+    elif k is not None or loaded_k is not None:
+        act_fn = "topk"
+        resolved_k = k if k is not None else loaded_k
+    else:
+        act_fn = "relu"
 
     # Create instance and load state dict
     with torch.device("meta"):
@@ -479,6 +553,7 @@ def load_clt(
             scan_name=scan_name,
             dtype=dtype,
             clt_path=clt_path,
+            k=resolved_k,
         )
 
     instance.load_state_dict(state_dict, assign=True)
@@ -591,6 +666,19 @@ def load_gemma_scope_2_clt(
 def _load_state_dict(
     clt_path, lazy_decoder=True, lazy_encoder=False, device=None, dtype=torch.bfloat16
 ):
+    state_dict, _ = _load_clt_checkpoint(
+        clt_path,
+        lazy_decoder=lazy_decoder,
+        lazy_encoder=lazy_encoder,
+        device=device,
+        dtype=dtype,
+    )
+    return state_dict
+
+
+def _load_clt_checkpoint(
+    clt_path, lazy_decoder=True, lazy_encoder=False, device=None, dtype=torch.bfloat16
+) -> tuple[dict[str, torch.Tensor], list[int] | None]:
     if device is None:
         device = get_default_device()
 
@@ -600,15 +688,18 @@ def _load_state_dict(
     # Get dimensions from first file
     dec_file = "W_enc_0.safetensors"
     with safe_open(os.path.join(clt_path, dec_file), framework="pt", device=str(device)) as f:
+        keys_0 = set(f.keys())
         d_transcoder, d_model = f.get_slice("W_enc_0").get_shape()
-        has_threshold = "threshold_0" in f.keys()
-        has_skip = "W_skip_0" in f.keys()
+        has_threshold = "threshold_0" in keys_0
+        has_skip = "W_skip_0" in keys_0
+        has_k = ("k_0" in keys_0) or ("k" in keys_0)
 
     # Preallocate tensors
     b_dec = torch.zeros(n_layers, d_model, device=device, dtype=dtype)
     b_enc = torch.zeros(n_layers, d_transcoder, device=device, dtype=dtype)
 
     state_dict = {"b_dec": b_dec, "b_enc": b_enc}
+    loaded_k: list[int] | None = [] if has_k else None
 
     if has_skip:
         state_dict["W_skip"] = torch.zeros(n_layers, d_model, d_model, device=device, dtype=dtype)
@@ -628,11 +719,19 @@ def _load_state_dict(
     for i in range(n_layers):
         enc_file = f"W_enc_{i}.safetensors"
         with safe_open(os.path.join(clt_path, enc_file), framework="pt", device=str(device)) as f:
-            if (f"W_skip_{i}" in f.keys()) != has_skip:
+            keys_i = set(f.keys())
+            if (f"W_skip_{i}" in keys_i) != has_skip:
                 raise ValueError(
                     f"Inconsistent skip weights in {enc_file}: all layers must include "
                     "W_skip weights or none may include them"
                 )
+            layer_has_k = (f"k_{i}" in keys_i) or ("k" in keys_i)
+            if layer_has_k != has_k:
+                raise ValueError(
+                    f"Inconsistent TopK k values in {enc_file}: all layers must include "
+                    "k or none may include it"
+                )
+
             if has_skip:
                 state_dict["W_skip"][i] = f.get_tensor(f"W_skip_{i}").to(dtype)
 
@@ -647,10 +746,19 @@ def _load_state_dict(
                 threshold = f.get_tensor(f"threshold_{i}").to(dtype)
                 state_dict["activation_function.threshold"][i] = threshold.unsqueeze(0)
 
+            if loaded_k is not None:
+                k_key = f"k_{i}" if f"k_{i}" in keys_i else "k"
+                k_tensor = f.get_tensor(k_key)
+                if k_tensor.numel() != 1:
+                    raise ValueError(
+                        f"Expected scalar k tensor in {enc_file}, got shape {tuple(k_tensor.shape)}"
+                    )
+                loaded_k.append(int(k_tensor.item()))
+
         # Load W_dec for this layer if not lazy
         if not lazy_decoder:
             dec_file = os.path.join(clt_path, f"W_dec_{i}.safetensors")
             with safe_open(dec_file, framework="pt", device=str(device)) as f:
                 state_dict[f"W_dec.{i}"] = f.get_tensor(f"W_dec_{i}").to(dtype)
 
-    return state_dict
+    return state_dict, loaded_k

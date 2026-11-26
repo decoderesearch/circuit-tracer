@@ -167,30 +167,34 @@ def load_transcoders(
 
         if "gemma-scope-2" in config["repo_id"] and "transcoders" in config:
             transcoder_paths = resolve_transcoder_paths(config)
-            local_path = transcoder_paths
-
-            load_fn = load_gemma_scope_2_clt
-
-        else:
-            subfolder = config.get("subfolder")
-            if subfolder:
-                allow_patterns = [f"{subfolder}/*.safetensors"]
-            else:
-                allow_patterns = ["*.safetensors"]
-
-            local_path = snapshot_download(
-                config["repo_id"],
-                revision=config.get("revision", "main"),
-                allow_patterns=allow_patterns,
+            return load_gemma_scope_2_clt(
+                transcoder_paths,
+                scan_name=config["scan_name"],
+                feature_input_hook=config["feature_input_hook"],
+                feature_output_hook=config["feature_output_hook"],
+                lazy_decoder=lazy_decoder,
+                lazy_encoder=lazy_encoder,
+                dtype=dtype,
+                device=device,
             )
 
-            if subfolder:
-                local_path = os.path.join(local_path, subfolder)
+        subfolder = config.get("subfolder")
+        if subfolder:
+            allow_patterns = [f"{subfolder}/*.safetensors"]
+        else:
+            allow_patterns = ["*.safetensors"]
 
-            load_fn = load_clt
+        local_path = snapshot_download(
+            config["repo_id"],
+            revision=config.get("revision", "main"),
+            allow_patterns=allow_patterns,
+        )
 
-        return load_fn(
-            local_path,  # type:ignore
+        if subfolder:
+            local_path = os.path.join(local_path, subfolder)
+
+        return load_clt(
+            local_path,
             scan_name=config["scan_name"],
             feature_input_hook=config["feature_input_hook"],
             feature_output_hook=config["feature_output_hook"],
@@ -198,6 +202,8 @@ def load_transcoders(
             lazy_encoder=lazy_encoder,
             dtype=dtype,
             device=device,
+            activation_function=config.get("activation") or config.get("activation_function"),
+            k=config.get("k"),
         )
     else:
         raise ValueError(f"Unknown model kind: {model_kind}")
