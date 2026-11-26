@@ -190,18 +190,26 @@ class TransformerLensReplacementModel(HookedTransformer):
         for layer in range(self.cfg.n_layers):
             self._configure_skip_connection(self.blocks[layer], self.transcoders, layer)
 
-        def stop_gradient(acts, hook):
-            return acts.detach()
+        # Attention patterns and normalization scales are detached by default. The flags are
+        # read at call time, so `set_gradient_flow` can switch them per attribution run.
+        self.freeze_attention = True
+        self.freeze_layernorm = True
+
+        def stop_gradient_attention(acts, hook):
+            return acts.detach() if self.freeze_attention else acts
+
+        def stop_gradient_layernorm(acts, hook):
+            return acts.detach() if self.freeze_layernorm else acts
 
         for block in self.blocks:
-            block.attn.hook_pattern.add_hook(stop_gradient, is_permanent=True)  # type: ignore
-            block.ln1.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
-            block.ln2.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
+            block.attn.hook_pattern.add_hook(stop_gradient_attention, is_permanent=True)  # type: ignore
+            block.ln1.hook_scale.add_hook(stop_gradient_layernorm, is_permanent=True)  # type: ignore
+            block.ln2.hook_scale.add_hook(stop_gradient_layernorm, is_permanent=True)  # type: ignore
             if hasattr(block, "ln1_post"):
-                block.ln1_post.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
+                block.ln1_post.hook_scale.add_hook(stop_gradient_layernorm, is_permanent=True)  # type: ignore
             if hasattr(block, "ln2_post"):
-                block.ln2_post.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
-            self.ln_final.hook_scale.add_hook(stop_gradient, is_permanent=True)  # type: ignore
+                block.ln2_post.hook_scale.add_hook(stop_gradient_layernorm, is_permanent=True)  # type: ignore
+        self.ln_final.hook_scale.add_hook(stop_gradient_layernorm, is_permanent=True)  # type: ignore
 
         for param in self.parameters():
             param.requires_grad = False
@@ -211,6 +219,12 @@ class TransformerLensReplacementModel(HookedTransformer):
             return acts
 
         self.hook_embed.add_hook(enable_gradient, is_permanent=True)  # type: ignore
+
+    def set_gradient_flow(self, freeze_attention: bool = True, freeze_layernorm: bool = True):
+        """Choose whether attribution treats attention patterns / normalization scales as
+        constants (the default) or keeps their first-order effect."""
+        self.freeze_attention = freeze_attention
+        self.freeze_layernorm = freeze_layernorm
 
     def _configure_skip_connection(
         self, block, transcoders: TranscoderSet | CrossLayerTranscoder, layer: int

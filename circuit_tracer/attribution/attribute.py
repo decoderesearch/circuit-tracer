@@ -29,6 +29,8 @@ def attribute(
     offload: Literal["cpu", "disk", None] = None,
     verbose: bool = False,
     update_interval: int = 4,
+    freeze_attention: bool = True,
+    freeze_layernorm: bool = True,
 ) -> Graph:
     """Compute an attribution graph for *prompt*.
 
@@ -55,6 +57,15 @@ def attribute(
                  or None (no offloading).
         verbose: Whether to show progress information.
         update_interval: Number of batches to process before updating the feature ranking.
+        freeze_attention: If True (default), attention patterns are treated as constants
+            (detached), so edges only follow OV paths. If False, gradients also flow through
+            the attention pattern (QK paths), and edges become the exact first-order
+            (Jacobian) attributions of the replacement model.
+        freeze_layernorm: If True (default), LayerNorm/RMSNorm scales are detached. If False,
+            gradients flow through the normalization scale. With both set to False, the graph
+            is the first-order expansion of the replacement model around the prompt: edges no
+            longer sum exactly to the target, but path sums predict intervention effects much
+            better.
 
     Returns:
         Graph: Fully dense adjacency (unpruned).
@@ -74,6 +85,8 @@ def attribute(
             offload=offload,
             verbose=verbose,
             update_interval=update_interval,
+            freeze_attention=freeze_attention,
+            freeze_layernorm=freeze_layernorm,
         )
     else:
         from .attribute_transformerlens import attribute as attribute_transformerlens
@@ -89,4 +102,6 @@ def attribute(
             offload=offload,
             verbose=verbose,
             update_interval=update_interval,
+            freeze_attention=freeze_attention,
+            freeze_layernorm=freeze_layernorm,
         )
