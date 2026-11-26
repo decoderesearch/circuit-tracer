@@ -191,7 +191,9 @@ def create_graph_files(
         scan_name = graph.scan_name
 
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        from circuit_tracer.utils import get_default_device
+
+        device = get_default_device()
     graph.to(device)
     node_mask, edge_mask, cumulative_scores = (
         el.cpu() for el in prune_graph(graph, node_threshold, edge_threshold)
